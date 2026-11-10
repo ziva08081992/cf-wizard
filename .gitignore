@@ -1,0 +1,13 @@
+/.agents/
+/.venv/
+__pycache__/
+*.exe
+*.sqlite3
+*.log
+/build/
+/dist/
+*.cf
+*.cfe
+*.1CD
+*.sqlite3-*
+.env
