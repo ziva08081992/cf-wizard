@@ -3,6 +3,7 @@
 from collections.abc import Callable
 import os
 from pathlib import Path
+from threading import Event
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QMainWindow, QMessageBox
 
 from . import __version__
 from .adapters import BUILD_EXECUTABLES, BUILD_LABELS, PROJECT_PLATFORM_VERSION, preferred_platform
-from .application import IndexUpdate, JournaledError, Preview, Wizard
+from .application import GitTaskQuery, GitTaskResult, IndexUpdate, JournaledError, Preview, Wizard
 from .dependency_index import IndexReader
 from .gitea import DEFAULT_GITEA, ExportSourceFactory, GiteaClient, GiteaError, credential_target, interval_seconds, relative_path, server_address
 from .git_credentials import WindowsTokenStore
@@ -85,6 +86,7 @@ def _stub_groups(preview) -> list[dict]:
 class WizardBridge(QObject):
     changed = Signal("QVariantMap")
     stubsChanged = Signal("QVariantList")
+    gitTaskProgress = Signal(int)
     journalOpened = Signal(str, str)
     notice = Signal(str, str)
 
@@ -104,6 +106,10 @@ class WizardBridge(QObject):
         self.git_branches = []
         self.git_poll_info = ""
         self.git_poll_task = None
+        self.git_task_filter: GitTaskResult | None = None
+        self.git_task_revision = 0
+        self.git_task_stop: Event | None = None
+        self.git_task_scope = ""
         self.git_timer = QTimer(self)
         self.git_timer.timeout.connect(self._poll_git)
         defaults = {field: str(preferred_platform(platforms, method) or "") for method, field in PLATFORM_FIELDS.items()}
@@ -139,6 +145,8 @@ class WizardBridge(QObject):
         can_use_platform = backend is not None and mode in ("auto", backend)
         placeholder = (f"Конфигуратор {PROJECT_PLATFORM_VERSION} не найден" if mode == "auto"
                        else f"Укажите {BUILD_EXECUTABLES[mode]}")
+        git_task_ready = self._git_task_available()
+        result = self.git_task_filter if git_task_ready else None
         return {
             "values": {**self.values, "platform_path": platform_path},
             "platforms": [str(path) for path in self.platforms if path.name.casefold() == BUILD_EXECUTABLES.get(mode)],
@@ -154,6 +162,15 @@ class WizardBridge(QObject):
             "gitBranch": self.git_settings["branch"],
             "gitLocation": f"{self.git_settings['repository']} / {self.git_settings['directory']}",
             "gitPollInfo": self.git_poll_info,
+            "gitTaskReady": git_task_ready,
+            "gitTaskRevision": self.git_task_revision,
+            "gitTaskScope": self.git_task_scope,
+            "gitTaskCancelling": self.git_task_stop is not None and self.git_task_stop.is_set(),
+            "gitTaskResult": {
+                "scope": self._git_task_caption(result.query),
+                "commits": result.commits, "files": result.files, "unmapped": result.unmapped,
+                "objects": len(result.objects), "canMark": not self.selected.issuperset(result.objects),
+            } if result is not None else None,
             "gitOpenText": "Обновить ветку" if self.catalog and self.catalog.git and
                            self.catalog.git.branch == self.git_settings["branch"] else "Открыть ветку",
             "selected": [_object(key) for key in sorted(self.selected)],
@@ -181,12 +198,38 @@ class WizardBridge(QObject):
         self.changed.emit(self.snapshot())
 
     def _filtered(self, query, selected_only):
+        result = self.git_task_filter if self._git_task_available() else None
         if selected_only:
-            return object_groups(tuple(sorted(self.selected)), query)
-        if query != self._query:
-            self._query = query
-            self._groups = object_groups(self.catalog.objects, query) if self.catalog else {}
+            selection = self.selected if result is None else self.selected & result.objects
+            return object_groups(tuple(sorted(selection)), query)
+        cache_key = (query, result is not None)
+        if cache_key != self._query:
+            self._query = cache_key
+            objects = self.catalog.objects if self.catalog else ()
+            if result is not None:
+                objects = tuple(sorted(result.objects))
+            self._groups = object_groups(objects, query)
         return self._groups
+
+    def _git_task_available(self):
+        git = self.catalog.git if self.catalog else None
+        return (self.source_mode == "git" and git is not None and git.client is self.git_client
+                and git.branch == self.git_settings["branch"])
+
+    def _git_task_caption(self, query):
+        git = self.catalog.git
+        if query.since is None:
+            period = "Вся история"
+        else:
+            start = query.since.astimezone().strftime("%d.%m.%Y %H:%M")
+            end = query.until.astimezone().strftime("%d.%m.%Y %H:%M")
+            period = f"{start} — {end}"
+        return f"{query.key} · {git.branch} · {git.revision[:12]} · {period}"
+
+    def _set_git_task_filter(self, result):
+        self.git_task_filter = result
+        self.git_task_revision += 1
+        self._query = None
 
     @Slot(str, bool, result="QVariantList")
     def groups(self, query, selected_only=False):
@@ -214,7 +257,7 @@ class WizardBridge(QObject):
     def _invalidate_catalog(self):
         self.catalog = None
         self.catalog_revision += 1
-        self._query = None
+        self._set_git_task_filter(None)
         self.selected.clear()
         self._invalidate_preview()
         self.status = "Откройте XML-выгрузку."
@@ -326,8 +369,22 @@ class WizardBridge(QObject):
         if name == "about":
             self.notice.emit("О программе", f"Мастер технической CF\nВерсия программы {__version__}\n"
                              "Спасибо alonehobo за скрипт partial_cf.py.")
+        elif name == "cancel-git-task" and self.git_task_stop is not None:
+            self.git_task_stop.set()
+            self.status = "Отменяю поиск после текущего запроса…"
+            self._emit()
         elif self.task is None:
-            if name == "open-source":
+            if name == "clear-git-task" and self.git_task_filter is not None:
+                self._set_git_task_filter(None)
+                self.status, self.status_kind = "Отбор по задаче сброшен.", "ready"
+                self._emit()
+            elif name == "mark-git-task" and self._git_task_available() and self.git_task_filter is not None:
+                objects = self.git_task_filter.objects
+                if not self.selected.issuperset(objects):
+                    self.selected.update(objects)
+                    self._invalidate_preview()
+                    self._emit()
+            elif name == "open-source":
                 self._open_export()
             elif name == "git-connect":
                 self._connect_git()
@@ -381,7 +438,7 @@ class WizardBridge(QObject):
 
         self._run("Читаю журнал…", read, opened, operation_log=log)
 
-    def _run(self, status, operation, success, *, operation_log=None):
+    def _run(self, status, operation, success, *, operation_log=None, accept_result=None):
         self.task = Task(operation)
         self.status, self.status_kind = status, "busy"
         self.diagnostics.step(status, operation_log)
@@ -389,6 +446,9 @@ class WizardBridge(QObject):
 
         def completed(result, error):
             self.task = None
+            if accept_result is not None and not accept_result():
+                self._emit()
+                return
             log = operation_log
             if error is None:
                 if isinstance(result, (IndexUpdate, Preview)):
@@ -409,6 +469,43 @@ class WizardBridge(QObject):
 
         self.task.signals.finished.connect(completed, Qt.ConnectionType.QueuedConnection)
         QThreadPool.globalInstance().start(self.task)
+
+    @Slot(str, bool)
+    def searchGitTask(self, value, all_history):
+        if self.task is not None or not self._git_task_available():
+            return
+        try:
+            query = GitTaskQuery.create(value, all_history)
+        except ValueError as error:
+            self.notice.emit("Номер задачи Git", str(error))
+            return
+
+        catalog = self.catalog
+        stop = self.git_task_stop = Event()
+        self.git_task_scope = self._git_task_caption(query)
+
+        def find():
+            try:
+                return self.wizard.find_git_task(catalog, query, stop, self.gitTaskProgress.emit)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"Поиск по задаче {query.key} не завершён. {error}") from None
+
+        def accept_result():
+            self.git_task_stop = None
+            self.git_task_scope = ""
+            if stop.is_set():
+                self.status, self.status_kind = "Поиск по задаче отменён.", "idle"
+                return False
+            if self.catalog is not catalog or not self._git_task_available():
+                self.status, self.status_kind = "Открытая ревизия изменилась. Повторите поиск.", "idle"
+                return False
+            return True
+
+        def found(result):
+            self._set_git_task_filter(result)
+            self.status = f"Поиск по задаче {query.key} завершён."
+
+        self._run(f"Ищу коммиты по задаче {query.key}…", find, found, accept_result=accept_result)
 
     @Slot(str)
     def setSourceMode(self, mode):
@@ -548,8 +645,10 @@ class WizardBridge(QObject):
 
     def _publish_catalog(self, catalog):
         previous = self.opened_identity
+        result = self.git_task_filter if self.catalog == catalog and catalog.git is not None else None
         self._invalidate_catalog()
         self.catalog = catalog
+        self.git_task_filter = result
         self.catalog_revision += 1
         self._query = None
         self.opened_identity = catalog.preference_key
@@ -598,7 +697,7 @@ class WizardBridge(QObject):
             if self.catalog != update.source:
                 self.catalog = update.source
                 self.catalog_revision += 1
-                self._query = None
+                self._set_git_task_filter(None)
                 self.selected.intersection_update(update.source.objects)
             self.last_dirs["index_directory"] = str(update.path.parent)
             self.index_directories[update.source.preference_key] = str(update.path.parent)

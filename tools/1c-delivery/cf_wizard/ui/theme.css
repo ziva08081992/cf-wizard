@@ -86,6 +86,13 @@
   #cf-wizard-preview .cf-workspace { display: grid; grid-template-columns: minmax(0,var(--cf-tree-share)) minmax(0,var(--cf-package-share)); background: var(--cf-panel); }
   #cf-wizard-preview .cf-pane { display: flex; flex-direction: column; min-width: 0; padding: 12px 14px 10px; }
   #cf-wizard-preview .cf-package { border-left: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-git-task { display: grid; gap: 6px; margin-bottom: 9px; padding: 8px; background: var(--cf-window); border: 1px solid var(--cf-border); border-radius: 5px; }
+  #cf-wizard-preview .cf-git-task-fields { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 6px; }
+  #cf-wizard-preview .cf-task-key { flex: 1 1 110px; }
+  #cf-wizard-preview .cf-git-task select { min-height: 32px; padding: 4px 6px; background: var(--cf-bar); color: var(--cf-text); border: 1px solid var(--cf-border); border-radius: 5px; font: inherit; }
+  #cf-wizard-preview .cf-task-meta { margin: 0; color: var(--cf-muted); font-size: 12px; overflow-wrap: anywhere; }
+  #cf-wizard-preview .cf-git-task-result { display: grid; gap: 6px; }
+  #cf-wizard-preview .cf-git-task-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   #cf-wizard-preview .cf-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; }
   #cf-wizard-preview .cf-search { position: relative; flex: 1 1 210px; }
   #cf-wizard-preview .cf-selected-filter { display: flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--cf-muted); }

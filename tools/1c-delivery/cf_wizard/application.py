@@ -1,7 +1,9 @@
 """Use cases and ports for choosing objects and building a technical CF."""
 
 from collections.abc import Iterable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import re
@@ -27,6 +29,32 @@ class ExportCatalog:
 
     def with_git(self, files):
         return replace(self, git=files)
+
+
+@dataclass(frozen=True)
+class GitTaskQuery:
+    key: str
+    since: datetime | None
+    until: datetime | None
+
+    @classmethod
+    def create(cls, value: str, all_history: bool):
+        key = value.strip()
+        if len(key) > 64 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", key):
+            raise ValueError("Укажите номер задачи Git в формате ERP-123.")
+        if all_history:
+            return cls(key.upper(), None, None)
+        until = datetime.now(timezone.utc).replace(microsecond=0)
+        return cls(key.upper(), until - timedelta(days=90), until)
+
+
+@dataclass(frozen=True)
+class GitTaskResult:
+    query: GitTaskQuery
+    commits: int
+    files: int
+    unmapped: int
+    objects: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -73,6 +101,8 @@ class PreviewError(JournaledError):
 class ExportReader(Protocol):
     def read(self, path: Path) -> ExportCatalog: ...
 
+    def objects_for_paths(self, source: ExportCatalog, paths: set[str]) -> tuple[frozenset[str], int]: ...
+
 
 class PackageBuilder(Protocol):
     def prepare(self, source: ExportCatalog, task: str | None, selected: tuple[str, ...],
@@ -112,6 +142,25 @@ class Wizard:
 
     def open_export(self, path: str) -> ExportCatalog:
         return self.reader.read(_entry_path(path, "Укажите папку XML-выгрузки или файл Configuration.xml."))
+
+    def find_git_task(self, source: ExportCatalog, query: GitTaskQuery, cancelled, report) -> GitTaskResult:
+        git = source.git
+        if git is None:
+            raise ValueError("Откройте нужную ветку Gitea.")
+        key = re.compile(rf"(?<!\w){re.escape(query.key)}(?!\w)", re.IGNORECASE)
+        matches = [sha for sha, message in git.client.commits(
+            git.revision, since=query.since, until=query.until, cancelled=cancelled, report=report,
+        ) if key.search(message)]
+        prefix = git.directory + "/"
+        paths = set()
+        for sha in matches:
+            if cancelled.is_set():
+                raise CancelledError
+            paths.update(path[len(prefix):] for path in git.client.commit_paths(sha) if path.startswith(prefix))
+        if cancelled.is_set():
+            raise CancelledError
+        objects, unmapped = self.reader.objects_for_paths(source, paths) if paths else (frozenset(), 0)
+        return GitTaskResult(query, len(matches), len(paths), unmapped, objects)
 
     def index_path(self, source: ExportCatalog, directory: str) -> Path | None:
         text = directory.strip().strip('"')

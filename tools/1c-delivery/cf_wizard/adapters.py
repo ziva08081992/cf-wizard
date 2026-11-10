@@ -209,6 +209,21 @@ class DesignerExport:
             raise ValueError("В выгрузке нет объектов для переноса.")
         return ExportCatalog(root, name, objects), descriptors
 
+    def objects_for_paths(self, source: ExportCatalog, paths: set[str]) -> tuple[frozenset[str], int]:
+        current, descriptors = self.describe(source.root)
+        if current != source:
+            raise ValueError("Состав открытой XML-выгрузки изменился. Откройте ветку снова.")
+        owners = {descriptors[key]: key for key in current.objects}
+        objects = set()
+        unmapped = 0
+        for path in paths:
+            owner = owners.get(_owner_descriptor(path))
+            if owner is None:
+                unmapped += 1
+            else:
+                objects.add(owner)
+        return frozenset(objects), unmapped
+
 
 class DesignerDependencyIndexes:
     def __init__(self, reader: DesignerExport, default_directory: Path, default_logs: Path):
