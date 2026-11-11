@@ -1,0 +1,261 @@
+{
+  "schema_version": "1.0",
+  "task_id": "CF-WIZARD-GITHUB-SOURCE",
+  "change_id": "add-cf-wizard-github-source",
+  "generated_at": "2026-11-11T10:23:45.046034Z",
+  "source": {
+    "configuration": "CF Wizard desktop tool",
+    "platform_version": "8.3.27.2214; Python/API change does not invoke platform",
+    "revision": "ccdd0c8124e9a50deccd63e1ec02be452b2dd91b (local code); merged main 78dede8a98a55e1bcd7fe4bd3a5530cdac3c2b0f (browser)",
+    "source_sets": []
+  },
+  "routing": {
+    "complexity": {
+      "score": 10,
+      "level": "high",
+      "dimensions": {
+        "behavior": 2,
+        "dependencies": 2,
+        "data_queries": 3,
+        "effects": 1,
+        "uncertainty": 1,
+        "pattern_diversity": 1
+      },
+      "reason_codes": [
+        "git_provider_strategy",
+        "provider_scoped_credentials",
+        "github_pagination_and_large_commit_completeness",
+        "persisted_settings_compatibility",
+        "revision_bound_source_reuse"
+      ]
+    },
+    "breadth": {
+      "object_count": 0,
+      "score": 0
+    },
+    "risk": {
+      "level": "high",
+      "flags": [
+        "permissions_or_security"
+      ]
+    },
+    "recommended_route": "human_gate",
+    "selected_route": "full",
+    "selected_by": "human",
+    "human_decision_note": "Пользователь выбрал Full Path, затем явно утвердил план и реализацию, создание PR и слияние. EXE не запрошен."
+  },
+  "scope": {
+    "objects": [],
+    "routines": [
+      "ExportSourceFactory",
+      "GiteaClient/GitHubClient",
+      "GitFiles",
+      "Wizard.find_git_task",
+      "WizardBridge",
+      "GitConnectionDialog",
+      "PathPreferences",
+      "WindowsTokenStore"
+    ],
+    "excluded": [
+      "BSL/XML конфигураций и расширений 1С",
+      "GitHub Enterprise/GitLab/OAuth",
+      "Изменение SQLite-схемы и алгоритма зависимостей",
+      "Полный ZIP/clone",
+      "Пересборка EXE",
+      "Самостоятельное расширение PAT"
+    ]
+  },
+  "use_case_analysis": {
+    "required": true,
+    "reason": "Альтернативный Git API является вариантом существующей actor-goal подготовки CF, а не новым независимым процессом.",
+    "use_cases": [
+      {
+        "id": "UC-01",
+        "name": "Подготовить техническую CF из выбранного Git-сервиса",
+        "status": "confirmed"
+      }
+    ]
+  },
+  "confirmed_facts": [
+    {
+      "id": "F1",
+      "kind": "extension_point",
+      "statement": "Фабрика получает Git-клиент, закрепляет SHA и передаёт общий GitFiles каталогу XML. Провайдер можно заменить без изменения доменных объектов.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/gitea.py",
+        "lines": "454-465"
+      },
+      "critical": true
+    },
+    {
+      "id": "F2",
+      "kind": "data_flow",
+      "statement": "GitFiles проверяет размер/Git blob hash и безопасные пути, использует sparse blob-кэш, отказывает при LFS. Эти проверки сохраняются.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/gitea.py",
+        "lines": "328-338,373-403"
+      },
+      "critical": true
+    },
+    {
+      "id": "F3",
+      "kind": "data_flow",
+      "statement": "Метаданные загружаются пачками до20 XML; конкретный file-contents endpoint принадлежит Gitea.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/gitea.py",
+        "lines": "265,422-451"
+      },
+      "critical": true
+    },
+    {
+      "id": "F4",
+      "kind": "data_flow",
+      "statement": "Обновление Git SQLite использует draft, проверки helper/schema/source/quick_check и финальный replace; факты XML переиспользуются по hash.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/dependency_index.py",
+        "lines": "107-148,193-236"
+      },
+      "critical": true
+    },
+    {
+      "id": "F5",
+      "kind": "data_flow",
+      "statement": "В настройках ещё нет provider; WinCred target и cache identity используют Gitea server/repository/directory/branch. Нужна совместимая изоляция GitHub.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/gitea.py",
+        "lines": "61,318-320"
+      },
+      "critical": true
+    },
+    {
+      "id": "F6",
+      "kind": "routine",
+      "statement": "Qt прямо создаёт GiteaClient и удаляет token через сохранённые настройки, хотя поля окна можно отредактировать; UI должен передавать выбранный provider/host.",
+      "evidence_tool": "Full Discovery: read-only source inspection",
+      "locator": {
+        "path": "tools/1c-delivery/cf_wizard/qt_view.py",
+        "lines": null
+      },
+      "critical": true
+    },
+    {
+      "id": "F7",
+      "kind": "other",
+      "statement": "GitHub get-commit files пагинируется, но ограничен3000 путями. Diff/patch не дают надёжной полноты большого коммита.",
+      "evidence_tool": "GitHub official docs; web open/find",
+      "locator": {
+        "path": "https://docs.github.com/en/rest/commits/commits#get-a-commit",
+        "lines": null
+      },
+      "critical": true
+    },
+    {
+      "id": "F8",
+      "kind": "other",
+      "statement": "GitHub recursive tree ограничен100000 entries/7MB; truncated требует нерекурсивного обхода. Любое значение recursive включает рекурсию.",
+      "evidence_tool": "GitHub official docs; web open/find",
+      "locator": {
+        "path": "https://docs.github.com/en/rest/git/trees#get-a-tree",
+        "lines": null
+      },
+      "critical": true
+    },
+    {
+      "id": "F9",
+      "kind": "other",
+      "statement": "GraphQL Blob содержит oid/byteSize/isBinary/isTruncated/text, Repository.object позволяет читать по immutable OID; fine-grained PAT поддержан.",
+      "evidence_tool": "GitHub official docs and changelog; web open/find",
+      "locator": {
+        "path": "https://docs.github.com/en/graphql/reference/git#blob",
+        "lines": null
+      },
+      "critical": true
+    },
+    {
+      "id": "F10",
+      "kind": "other",
+      "statement": "Предыдущий task-filter PR #1 уже слит в main merge-коммитом78dede8a98a55e1bcd7fe4bd3a5530cdac3c2b0f; head branch удалена.",
+      "evidence_tool": "CUA: visible Merged state and merge link 2026-11-11",
+      "locator": {
+        "path": "https://github.com/ziva08081992/cf-wizard/pull/1",
+        "lines": null
+      },
+      "critical": true
+    }
+  ],
+  "hypotheses": [
+    {
+      "id": "H1",
+      "statement": "Private GraphQL Blob будет доступен PAT только выбранного репозитория с Contents:read.",
+      "impact": "high",
+      "verification_needed": "Узкий runtime-пилот на пользовательском private-репозитории; не расширять права автоматически."
+    },
+    {
+      "id": "H2",
+      "statement": "Пакетное чтение20 XML укладывается в бюджет и приемлемое время на размере рабочей конфигурации.",
+      "impact": "medium",
+      "verification_needed": "Измерить cold/warm/incremental HTTP-count, points и время; расчёт1450 пакетов для29тыс.XML не является замером."
+    }
+  ],
+  "conflicts": [],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "question": "Пропустят ли правила организации private GraphQL Blob через минимальный fine-grained PAT?",
+      "critical": false,
+      "owner": "external_validation"
+    },
+    {
+      "id": "Q2",
+      "question": "Каковы реальные время/лимиты холодной и повторной индексации рабочей выгрузки?",
+      "critical": false,
+      "owner": "external_validation"
+    }
+  ],
+  "validation_plan": [
+    {
+      "id": "V1",
+      "check": "OpenSpec strict и JSON schema артефактов",
+      "required": true,
+      "status": "completed",
+      "note": "OpenSpec strict valid; PowerShell Test-Json подтвердил обе схемы."
+    },
+    {
+      "id": "V2",
+      "check": "Регрессия Gitea/local, legacy settings/credential/cache и provider isolation",
+      "required": true,
+      "status": "completed"
+    },
+    {
+      "id": "V3",
+      "check": "Полнота GitHub tree/history/large commits и GraphQL byte parity/failures",
+      "required": true,
+      "status": "completed"
+    },
+    {
+      "id": "V4",
+      "check": "Qt UI flow, cancellation, index atomicity и отсутствие секретов в логах",
+      "required": true,
+      "status": "completed"
+    },
+    {
+      "id": "V5",
+      "check": "Независимое ревью эффективности/обоснованности и отдельное смысловое Full Path review",
+      "required": true,
+      "status": "completed"
+    },
+    {
+      "id": "V6",
+      "check": "Private GitHub read-only PAT pilot и время cold/warm/incremental",
+      "required": true,
+      "status": "deferred",
+      "note": "Нужен пользовательский GitHub PAT и репозиторий XML. Не блокирует планирование; не обозначать runtime-приёмкой синтетические тесты."
+    }
+  ],
+  "confidence": 0.88
+}

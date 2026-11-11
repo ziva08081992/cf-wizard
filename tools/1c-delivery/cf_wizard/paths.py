@@ -85,7 +85,7 @@ class PathSettingsFile:
         stored_git = data.get("git_settings")
         git = {}
         if isinstance(stored_git, dict):
-            git = {key: stored_git[key] for key in ("server", "repository", "directory", "branch", "cache")
+            git = {key: stored_git[key] for key in ("provider", "server", "repository", "directory", "branch", "cache")
                    if isinstance(stored_git.get(key), str)}
             seconds = stored_git.get("interval")
             if type(seconds) is int and (seconds == 0 or 30 <= seconds <= 86400):

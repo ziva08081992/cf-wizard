@@ -16,7 +16,8 @@ from . import __version__
 from .adapters import BUILD_EXECUTABLES, BUILD_LABELS, PROJECT_PLATFORM_VERSION, preferred_platform
 from .application import GitTaskQuery, GitTaskResult, IndexUpdate, JournaledError, Preview, Wizard
 from .dependency_index import IndexReader
-from .gitea import DEFAULT_GITEA, ExportSourceFactory, GiteaClient, GiteaError, credential_target, interval_seconds, relative_path, server_address
+from .git_api import DEFAULT_GITEA, GitError, connection_server, create_client, credential_target, interval_seconds, relative_path
+from .git_source import ExportSourceFactory
 from .git_credentials import WindowsTokenStore
 from .helper_worker import HELPER_SHA256
 from .journals import ErrorJournal
@@ -154,7 +155,7 @@ class WizardBridge(QObject):
             "platformLabel": f"{BUILD_LABELS[backend]} · {platform.parent.parent.name}" if can_use_platform else "",
             "configuration": self.catalog.configuration if self.catalog else "",
             "activeGit": self.catalog is not None and self.catalog.git is not None,
-            "activeSource": (f"Gitea · {self.catalog.git.branch} · {self.catalog.git.revision[:12]}"
+            "activeSource": (f"{self.catalog.git.client.label} · {self.catalog.git.branch} · {self.catalog.git.revision[:12]}"
                              if self.catalog and self.catalog.git else "Локальная папка"),
             "catalogRevision": self.catalog_revision,
             "sourceMode": self.source_mode,
@@ -274,7 +275,7 @@ class WizardBridge(QObject):
             if self.catalog.git is not None:
                 checked = IndexReader.open(path, self.catalog.identity, HELPER_SHA256) if path and path.is_file() else None
                 if checked is None:
-                    self.index_info = "Подготовьте отдельный индекс этой ревизии Gitea."
+                    self.index_info = "Подготовьте отдельный индекс этой ревизии Git."
                     return
                 checked.close()
             if path and path.is_file():
@@ -532,20 +533,20 @@ class WizardBridge(QObject):
             dialog.deleteLater()
 
         try:
-            settings["server"] = server_address(settings["server"])
+            settings["server"] = connection_server(settings["server"], settings.get("provider", "gitea"))
             settings["directory"] = relative_path(settings["directory"])
             settings["interval"] = interval_seconds(settings["interval"])
-            vault = WindowsTokenStore(credential_target(settings["server"]))
+            vault = WindowsTokenStore(credential_target(settings["server"], settings.get("provider", "gitea")))
             if not token:
                 token = vault.load()
-            client = GiteaClient(settings["server"], settings["repository"], token)
+            client = create_client(settings, token)
         except (ValueError, OSError) as error:
-            self.notice.emit("Подключение Gitea", str(error))
+            self.notice.emit("Подключение Git", str(error))
             return
 
         def connected(branches):
             if not branches:
-                self.status, self.status_kind = "Gitea не вернула доступных веток.", "error"
+                self.status, self.status_kind = f"{client.label} не вернула доступных веток.", "error"
                 return
             self.git_client = client
             self.git_branches = branches
@@ -559,19 +560,26 @@ class WizardBridge(QObject):
                 try:
                     vault.save(token)
                 except OSError:
-                    self.notice.emit("Подключение Gitea", "Токен доступен в сеансе. Windows не сохранила запись.")
+                    self.notice.emit("Подключение Git", "Токен доступен в сеансе. Windows не сохранила запись.")
 
-        self._run("Проверяю подключение и читаю ветки Gitea…", client.branches, connected)
+        self._run(f"Проверяю подключение и читаю ветки {client.label}…", client.branches, connected)
 
-    def _forget_git(self):
-        WindowsTokenStore(credential_target(self.git_settings["server"])).delete()
-        self.git_client = None
-        self.git_branches = []
-        if self.catalog is not None and self.catalog.git is not None:
+    def _forget_git(self, settings=None):
+        settings = settings or self.git_settings
+        target = credential_target(settings["server"], settings.get("provider", "gitea"))
+        WindowsTokenStore(target).delete()
+
+        def matches(client):
+            return client is not None and credential_target(client.server, client.provider) == target
+
+        if matches(self.git_client):
+            self.git_client = None
+            self.git_branches = []
+        if self.catalog is not None and self.catalog.git is not None and matches(self.catalog.git.client):
             self._invalidate_catalog()
-        self.git_timer.stop()
-        self.git_poll_info = ""
-        self.status = "Локальный токен Gitea удалён."
+            self.git_timer.stop()
+            self.git_poll_info = ""
+        self.status = "Локальный токен выбранного Git-сервиса удалён."
         self._emit()
 
     def _open_git(self):
@@ -579,9 +587,9 @@ class WizardBridge(QObject):
         client = self.git_client
         if client is None:
             try:
-                token = WindowsTokenStore(credential_target(settings["server"])).load()
+                token = WindowsTokenStore(credential_target(settings["server"], settings.get("provider", "gitea"))).load()
                 if token:
-                    client = GiteaClient(settings["server"], settings["repository"], token)
+                    client = create_client(settings, token)
             except (ValueError, OSError):
                 client = None
         if client is None:
@@ -633,8 +641,8 @@ class WizardBridge(QObject):
             if self.catalog is not catalog or not self.git_timer.isActive() or self.source_mode != "git":
                 return
             if error is not None:
-                self.git_poll_info = "Проверка ревизии Gitea недоступна."
-                if isinstance(error, GiteaError) and error.status in (401, 403):
+                self.git_poll_info = "Проверка ревизии Git недоступна."
+                if isinstance(error, GitError) and error.status in (401, 403, 429):
                     self.git_timer.stop()
             else:
                 self.git_poll_info = "Доступно обновление" if sha != git.revision else ""
@@ -664,7 +672,7 @@ class WizardBridge(QObject):
         self.values["index_directory"] = self.index_directories.get(catalog.preference_key, self.shared_index_directory)
         self._sync_index()
         if previous is not None and previous != catalog.preference_key and self.wizard.indexes is not None:
-            label = f"Gitea · {catalog.git.branch}" if catalog.git is not None else "Локальная выгрузка"
+            label = f"{catalog.git.client.label} · {catalog.git.branch}" if catalog.git is not None else "Локальная выгрузка"
             dialog = QMessageBox(
                 QMessageBox.Icon.Question, "Смена источника XML",
                 f"{label}. Используется отдельный индекс SQLite.\n\nПапка индекса\n{self.values['index_directory']}",

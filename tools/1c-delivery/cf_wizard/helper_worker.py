@@ -251,7 +251,7 @@ def resolve_dependencies(helper: Path, source: Path, selected: tuple[str, ...],
                  "_wizard_dependency": dependency, "_wizard_without_comments": without_bsl_comments}
     index = IndexReader.open(index_path, identity, HELPER_SHA256, pinned=git is not None) if index_path else None
     if git is not None and index is None:
-        raise ValueError("Создайте или обновите индекс выбранной ревизии Gitea.")
+        raise ValueError("Создайте или обновите индекс выбранной ревизии Git.")
     try:
         if index is not None:
             text = _instrument_index(text)

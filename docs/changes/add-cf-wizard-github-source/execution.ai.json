@@ -1,0 +1,231 @@
+{
+  "schema_version": "1.0",
+  "task_id": "CF-WIZARD-GITHUB-SOURCE",
+  "change_id": "add-cf-wizard-github-source",
+  "created_at": "2026-11-11T10:23:45.046034Z",
+  "updated_at": "2026-11-11T10:59:30.944125Z",
+  "routing": {
+    "triage_agent": "one_c_triage",
+    "requested_model": "gpt-6.1-sol",
+    "actual_model": "unknown",
+    "complexity": {
+      "score": 10,
+      "level": "high",
+      "dimensions": {
+        "behavior": 2,
+        "dependencies": 2,
+        "data_queries": 3,
+        "effects": 1,
+        "uncertainty": 1,
+        "pattern_diversity": 1
+      }
+    },
+    "breadth": {
+      "object_count": 0,
+      "score": 0
+    },
+    "risk": {
+      "level": "high",
+      "flags": [
+        "permissions_or_security"
+      ]
+    },
+    "recommended_route": "human_gate",
+    "selected_route": "full",
+    "selected_by": "human",
+    "reason_codes": [
+      "git_provider_strategy",
+      "provider_scoped_credentials",
+      "github_pagination_and_large_commit_completeness",
+      "persisted_settings_compatibility",
+      "revision_bound_source_reuse"
+    ],
+    "human_decision_note": "Пользователь выбрал Full Path, затем явно утвердил план и реализацию, создание PR и слияние. EXE не запрошен.",
+    "deferred_checks": [
+      "Private GitHub PAT/SSO pilot",
+      "Actual cold/warm/incremental times"
+    ]
+  },
+  "stages": [
+    {
+      "id": "T1",
+      "recorded_at": "2026-11-11T10:23:45.046034Z",
+      "stage": "triage",
+      "agent": "/root/cf_github_triage",
+      "requested_model": "gpt-6.1-sol",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "Complexity10/17, security high; человек выбрал Full.",
+      "data": {
+        "requested_effort": "ultra",
+        "human_gate": "full"
+      }
+    },
+    {
+      "id": "D1",
+      "recorded_at": "2026-11-11T10:23:45.046034Z",
+      "stage": "discovery",
+      "agent": "/root/cf_github_full",
+      "requested_model": "gpt-6.1-sol",
+      "actual_model": "unknown",
+      "result": "completed_with_warnings",
+      "summary": "Read-only Full Discovery: отдельная стратегия, общий sparse/cache/SQLite, GraphQL XML и Merkle diff; private runtime не проверен.",
+      "data": {
+        "requested_effort": "ultra",
+        "corporate_requests": false,
+        "token_access": false,
+        "source_writes": false
+      }
+    },
+    {
+      "id": "P1",
+      "recorded_at": "2026-11-11T10:23:45.046034Z",
+      "stage": "planning",
+      "agent": "/root",
+      "requested_model": "inherited",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "Подготовлены proposal/spec/design/tasks, код не изменён; OpenSpec strict valid.",
+      "data": {
+        "apply_started": false,
+        "pr_created": false,
+        "merge_performed": false,
+        "exe_built": false,
+        "approval": "awaiting new user request after artifacts presentation"
+      }
+    },
+    {
+      "id": "I1",
+      "recorded_at": "2026-11-11T10:57:15.775325Z",
+      "stage": "implementation",
+      "agent": "/root",
+      "requested_model": "inherited",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "Две API-стратегии через фабрику, общее sparse-хранилище, безопасный API selector, legacy Gitea и полный GitHub task filter.",
+      "data": {
+        "branch": "codex/github-source",
+        "base": "78dede8a98a55e1bcd7fe4bd3a5530cdac3c2b0f",
+        "manifest_sha256": "e6595abc96f7079a7e97f0f9926faece4249835936fd5172580513dc10542073",
+        "exe_built": false
+      }
+    },
+    {
+      "id": "V1",
+      "recorded_at": "2026-11-11T10:57:15.775325Z",
+      "stage": "validation",
+      "agent": "/root",
+      "requested_model": "inherited",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "100 Python/Qt tests, JS syntax и git diff --check пройдены.",
+      "data": {
+        "python": "3.12.10 dedicated build venv",
+        "qt": "6.10.2",
+        "tests": 100,
+        "failed": 0,
+        "skipped": 0,
+        "exit_code": 0,
+        "network": "synthetic HTTP only; no user tokens",
+        "qt_platform": "offscreen/software",
+        "initial_harness_issue": "Qt page teardown AV fixed in test by deleting page before profile/Application; product lifecycle unchanged",
+        "transient_issue": "One WinError5 replacing temporary paths.json; narrow16 and later full99/full100 passed without product retry changes"
+      }
+    },
+    {
+      "id": "R-semantic",
+      "recorded_at": "2026-11-11T10:57:15.775325Z",
+      "stage": "review",
+      "agent": "/root/cf_github_semantic",
+      "requested_model": "inherited",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "Независимый Full Path смысловой проход R1–R6 завершён, замечания устранены; повтор по финальным29hashes.",
+      "data": {
+        "report": "semantic-review.md",
+        "manifest_sha256": "e6595abc96f7079a7e97f0f9926faece4249835936fd5172580513dc10542073",
+        "open_blockers": 0
+      }
+    },
+    {
+      "id": "R-algorithm",
+      "recorded_at": "2026-11-11T10:59:30.944125Z",
+      "stage": "review",
+      "agent": "/root/cf_github_algorithm",
+      "requested_model": "gpt-6.1-sol / ultra (fixed role)",
+      "actual_model": "unknown",
+      "result": "completed",
+      "summary": "Эффективность и обоснованность проверены; 2 P2 устранены и адресно повторены.",
+      "data": {
+        "report": "algorithm-review.md",
+        "efficiency": "checked",
+        "justification": "checked",
+        "manifest_sha256": "e6595abc96f7079a7e97f0f9926faece4249835936fd5172580513dc10542073",
+        "open_blockers": 0
+      }
+    }
+  ],
+  "validation_summary": {
+    "openspec": {
+      "found": 0,
+      "fixed": 0,
+      "remaining": 0,
+      "status": "passed",
+      "note": "openspec validate add-cf-wizard-github-source --strict: valid"
+    },
+    "json_artifacts": {
+      "found": 0,
+      "fixed": 0,
+      "remaining": 0,
+      "status": "passed",
+      "note": "PowerShell Test-Json по локальным discovery/execution schemas: True/True."
+    },
+    "implementation": {
+      "found": 0,
+      "fixed": 0,
+      "remaining": 0,
+      "status": "passed",
+      "note": "Согласованный код и изолированные автоматические проверки завершены; private pilot отдельный."
+    },
+    "python_qt": {
+      "found": 0,
+      "fixed": 0,
+      "remaining": 0,
+      "status": "passed",
+      "note": "100 tests in10.052s; exit0; Qt6.10.2. Прогон не является производственным GitHub/1C runtime-пилотом."
+    },
+    "semantic": {
+      "found": 1,
+      "fixed": 1,
+      "remaining": 0,
+      "status": "passed",
+      "note": "Mode-only paths исправлены; адресно проверена граница Windows rules. Итог29hashes совпал."
+    },
+    "algorithm": {
+      "found": 2,
+      "fixed": 2,
+      "remaining": 0,
+      "status": "passed",
+      "note": "Оба раздела независимого one_c_algorithm_review; configured Sol6.1Ultra, actual model ID не доступен."
+    }
+  },
+  "external_validation": [
+    {
+      "id": "EV1",
+      "check": "Private GitHub minimal PAT и сравнение XML/зависимостей с тем же local SHA",
+      "status": "planned",
+      "owner": "user and implementation",
+      "environment": "User-selected private GitHub.com repository with XML export",
+      "note": "Нет подтверждённого GitHub PAT/экспорта для этого пилота; пользовательские секреты не читались."
+    },
+    {
+      "id": "EV2",
+      "check": "Реальные cold/warm/incremental замеры",
+      "status": "planned",
+      "owner": "user and implementation",
+      "environment": "Working-size XML export",
+      "note": "Производительность пока только оценена числом запросов, не измерена."
+    }
+  ],
+  "rework": []
+}

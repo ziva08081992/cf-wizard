@@ -27,11 +27,11 @@
           <span class="cf-source-label" id="cf-source-label">Источник XML</span>
           <div class="cf-source-options" role="group" aria-labelledby="cf-source-label">
             <button type="button" class="cf-button" data-source-mode="local" aria-pressed="true" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Локальная папка</button>
-            <button type="button" class="cf-button" data-source-mode="git" aria-pressed="false" disabled><i data-lucide="workflow" aria-hidden="true"></i>Gitea</button>
+            <button type="button" class="cf-button" data-source-mode="git" aria-pressed="false" disabled><i data-lucide="workflow" aria-hidden="true"></i>Git</button>
           </div>
         </div>
         <div class="cf-field cf-choice-picker cf-branch-picker" id="cf-git-source" hidden>
-          <label id="cf-git-branch-label" for="cf-git-branch">Ветка Gitea</label>
+          <label id="cf-git-branch-label" for="cf-git-branch">Ветка Git</label>
           <button type="button" id="cf-git-branch" class="cf-choice-toggle" aria-controls="cf-git-branch-options"
                   aria-haspopup="menu" aria-expanded="false" aria-labelledby="cf-git-branch-label cf-git-branch-value" disabled>
             <span id="cf-git-branch-value"></span>
@@ -209,9 +209,9 @@
             </div>
           </div>
         </section>
-        <section class="cf-preferences-section cf-gitea-settings" aria-label="Подключение Gitea">
-          <div><h3>Gitea</h3><span class="cf-secondary" id="cf-git-location"></span></div>
-          <button type="button" class="cf-button" data-action="git-connect"><i data-lucide="workflow" aria-hidden="true"></i>Подключение Gitea…</button>
+        <section class="cf-preferences-section cf-gitea-settings" aria-label="Подключение Git">
+          <div><h3>Git</h3><span class="cf-secondary" id="cf-git-location"></span></div>
+          <button type="button" class="cf-button" data-action="git-connect"><i data-lucide="workflow" aria-hidden="true"></i>Подключение Git…</button>
         </section>
       </div>
       <div class="cf-preferences-footer"><button type="submit" class="cf-button cf-primary">Готово</button></div>
@@ -240,9 +240,10 @@
       <h2 id="cf-help-title">Как собрать техническую CF</h2>
       <ol>
         <li>Мастер открывает сохранённую выгрузку при запуске. Путь к локальной папке или <code>Configuration.xml</code> можно выбрать в <strong>Настройках</strong>. Для открытия по введённому пути нажмите <strong>Открыть выгрузку</strong>.</li>
-        <li>Для Gitea выберите <strong>Gitea</strong>. В окне <strong>Настройки → Подключение Gitea</strong> введите персональный токен на чтение. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>
+        <li>Для Gitea или GitHub выберите <strong>Git</strong>. В окне <strong>Настройки → Подключение Git</strong> выберите API сервиса и введите персональный токен на чтение. Для GitHub.com используйте PAT только нужного репозитория с Contents: Read-only. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>
         <li>Чтобы отобрать объекты по задаче, введите <strong>Номер задачи Git</strong>, выберите период и нажмите <strong>Найти</strong>. По умолчанию проверяются последние 90 дней. <strong>Отметить найденные</strong> добавляет найденные объекты к уже отмеченным. Комплект использует состояние объектов в открытой ревизии ветки.</li>
-        <li>Подготовьте отдельный индекс ветки кнопкой <strong>Создать индекс</strong>. Мастер получает XML-описания и затем запрашивает файлы выбранных объектов по мере работы. При смене источника можно выбрать папку SQLite. Интервал проверки SHA задаётся в настройках Gitea. Значение 0 выключает проверку.</li>
+        <li>GitHub загружает XML для индекса пакетами, без полного архива репозитория. Отбор задачи учитывает полный список путей; merge сравнивается с первым родителем. Токены Gitea и GitHub хранятся раздельно.</li>
+        <li>Подготовьте отдельный индекс ветки кнопкой <strong>Создать индекс</strong>. Мастер получает XML-описания и затем запрашивает файлы выбранных объектов по мере работы. При смене источника можно выбрать папку SQLite. Интервал проверки SHA задаётся в настройках подключения Git. Значение 0 выключает проверку.</li>
         <li>В необязательное поле можно вписать номер задачи, дату или комментарий. Мастер использует текст в имени папки комплекта и заменяет недопустимые символы.</li>
         <li>Для ускорения поиска зависимостей нажмите <strong>Создать индекс</strong>. У каждой XML-выгрузки свой файл SQLite. После обновления выгрузки нажмите <strong>Обновить индекс</strong>. Мастер пересчитывает записи изменившихся объектов.</li>
         <li>Отметьте нужные объекты. Фильтр <strong>Только выбранные</strong> покажет все отмеченные объекты с учётом поиска. Нажмите <strong>Предпросмотр</strong>, чтобы увидеть зависимости и заглушки.</li>

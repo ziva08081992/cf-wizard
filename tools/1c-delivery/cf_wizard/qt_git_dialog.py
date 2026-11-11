@@ -1,4 +1,4 @@
-"""Native Gitea settings form. Credentials are collected in Qt."""
+"""Native Git settings form. Credentials are collected in Qt."""
 
 from collections.abc import Callable
 
@@ -38,9 +38,9 @@ QPushButton#gitConnect:hover { background: #3574e9; }
 
 
 class GitConnectionDialog(QDialog):
-    def __init__(self, parent: QWidget, settings: dict, branches: list[str], forget: Callable[[], None]):
+    def __init__(self, parent: QWidget, settings: dict, branches: list[str], forget: Callable[[dict], None]):
         super().__init__(parent)
-        self.setWindowTitle("Подключение Gitea")
+        self.setWindowTitle("Подключение Git")
         self.setMinimumWidth(540)
         self._forget = forget
 
@@ -59,7 +59,7 @@ class GitConnectionDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        title = QLabel("Подключение Gitea")
+        title = QLabel("Подключение Git")
         title.setObjectName("gitTitle")
         layout.addWidget(title)
         body = QWidget()
@@ -68,6 +68,15 @@ class GitConnectionDialog(QDialog):
         content.setContentsMargins(14, 12, 14, 12)
         content.setSpacing(8)
 
+        content.addWidget(QLabel("API сервиса"))
+        self.provider = QComboBox()
+        self.provider.addItem("Gitea", "gitea")
+        self.provider.addItem("GitHub", "github")
+        selected = settings.get("provider", "gitea")
+        self.provider.setCurrentIndex(self.provider.findData(selected))
+        self._selected_provider = selected
+        self._servers = {selected: str(settings.get("server", ""))}
+        content.addWidget(self.provider)
         repository = QLabel("Репозиторий")
         repository.setProperty("heading", True)
         content.addWidget(repository)
@@ -139,7 +148,7 @@ class GitConnectionDialog(QDialog):
         actions = QHBoxLayout(footer)
         actions.setContentsMargins(14, 9, 14, 9)
         delete = QPushButton("Удалить токен")
-        delete.setToolTip(f"Удалить сохранённый токен для {settings['server']}.")
+        delete.setToolTip("Удалить сохранённый токен для API и адреса, выбранных в этом окне.")
         delete.setAutoDefault(False)
         delete.clicked.connect(self._delete_token)
         cancel = QPushButton("Отмена")
@@ -153,26 +162,50 @@ class GitConnectionDialog(QDialog):
         actions.addStretch()
         actions.addWidget(cancel)
         actions.addWidget(connect)
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self.fields["server"].textEdited.connect(self._address_changed)
+        self.fields["repository"].textEdited.connect(lambda _: self.branch.clear())
+        self._access_hint()
         self.resize(620, self.sizeHint().height())
         self.fields["server"].setFocus()
 
     def connection_settings(self) -> dict:
         return {**{name: field.text().strip() for name, field in self.fields.items()},
+                "provider": self.provider.currentData(),
                 "branch": self.branch.currentText().strip(), "interval": self.interval.value()}
 
     def _choose_cache(self):
         field = self.fields["cache"]
         location = dialog_location(field.text()).get("initialdir", "")
-        folder = QFileDialog.getExistingDirectory(self, "Папка кэша Gitea", location)
+        folder = QFileDialog.getExistingDirectory(self, "Папка кэша Git", location)
         if folder:
             field.setText(normalize_path(folder))
 
     def _delete_token(self):
         try:
-            self._forget()
+            self._forget(self.connection_settings())
         except (OSError, ValueError) as error:
             self.hint.setText(str(error))
             return
         self.secret.clear()
         self.remember.setChecked(False)
-        self.hint.setText("Локальный токен Gitea удалён.")
+        self.hint.setText("Локальный токен выбранного Git-сервиса удалён.")
+
+    def _access_hint(self):
+        text = "Хранение в Диспетчере учётных данных Windows. "
+        text += ("GitHub: PAT только выбранного репозитория, Contents: Read-only."
+                 if self.provider.currentData() == "github" else "Gitea: персональный токен на чтение репозитория.")
+        self.hint.setText(text)
+
+    def _address_changed(self, _):
+        self.secret.clear()
+        self.remember.setChecked(False)
+        self.branch.clear()
+        self._access_hint()
+
+    def _provider_changed(self, _):
+        self._servers[self._selected_provider] = self.fields["server"].text()
+        self._selected_provider = self.provider.currentData()
+        self.fields["server"].setText(self._servers.get(self._selected_provider,
+                                        "https://github.com" if self._selected_provider == "github" else ""))
+        self._address_changed("")
