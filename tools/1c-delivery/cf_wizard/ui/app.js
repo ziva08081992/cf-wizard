@@ -17,6 +17,8 @@
   const buildMenu = one("#cf-build-options");
   const gitBranch = one("#cf-git-branch");
   const gitBranchMenu = one("#cf-git-branch-options");
+  const gitTaskKey = one("#cf-git-task-key");
+  const gitTaskPeriod = one("#cf-git-task-period");
   const groupIcons = {
     Subsystem: "layers", CommonModule: "code-xml", Document: "files",
     Catalog: "book-open", DataProcessor: "settings-2", InformationRegister: "table-2",
@@ -234,7 +236,7 @@
     }
     more.addEventListener("click", load);
     details.addEventListener("toggle", () => {
-      if (!query && !onlySelected) {
+      if (!query && !onlySelected && !state.gitTaskResult) {
         if (details.open) expanded.add(group.kind);
         else expanded.delete(group.kind);
       }
@@ -252,7 +254,8 @@
       if (request !== generation) return;
       const found = items.reduce((sum, group) => sum + group.count, 0);
       one("[data-selected-count]").title = "Найдено " + found;
-      groups.replaceChildren(...items.map(group => groupSection(group, query, (onlySelected || !!query) && found <= 800, onlySelected)));
+      const autoOpen = found <= 800 && (onlySelected || !!query || !!state.gitTaskResult);
+      groups.replaceChildren(...items.map(group => groupSection(group, query, autoOpen, onlySelected)));
       const empty = one("[data-empty-tree]");
       empty.hidden = !!items.length;
       empty.textContent = !state.configuration ? "Откройте XML-выгрузку."
@@ -319,8 +322,44 @@
     });
   }
 
+  function updateGitTaskButton() {
+    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || !gitTaskKey.value.trim();
+  }
+
+  function renderGitTask(started) {
+    const scope = state.gitTaskScope;
+    const result = state.gitTaskResult;
+    one("[data-git-task]").hidden = state.sourceMode !== "git";
+    one("[data-git-task-hint]").hidden = state.gitTaskReady;
+    gitTaskKey.disabled = gitTaskPeriod.disabled = state.busy || !state.gitTaskReady;
+    updateGitTaskButton();
+    action("cancel-git-task").hidden = !scope;
+    action("cancel-git-task").disabled = state.gitTaskCancelling;
+    one("[data-git-task-progress]").hidden = !scope;
+    one("[data-git-task-scope]").textContent = scope;
+    if (started) one("[data-git-task-scanned]").textContent = "Читаю историю коммитов…";
+    one("[data-git-task-result]").hidden = !result;
+    if (result) {
+      one("[data-git-task-caption]").textContent = result.scope;
+      const counts = ["Коммитов " + result.commits, "Файлов " + result.files, "Объектов " + result.objects];
+      if (result.unmapped) counts.push("Путей без объекта " + result.unmapped);
+      one("[data-git-task-counts]").textContent = counts.join(" · ");
+      action("mark-git-task").disabled = state.busy || !result.canMark;
+      action("clear-git-task").disabled = state.busy;
+    }
+  }
+
+  function findGitTask() {
+    if (!action("search-git-task").disabled) {
+      bridge.searchGitTask(gitTaskKey.value, gitTaskPeriod.value === "all");
+    }
+  }
+
   function renderState(next) {
     const catalogueChanged = !state || state.catalogRevision !== next.catalogRevision;
+    const taskFilterChanged = !state || state.gitTaskRevision !== next.gitTaskRevision
+      || Boolean(state.gitTaskResult) !== Boolean(next.gitTaskResult);
+    const gitTaskStarted = next.gitTaskScope && state?.gitTaskScope !== next.gitTaskScope;
     const selectionChanged = !state || state.selected.length !== next.selected.length
       || next.selected.some((object, index) => object.key !== state.selected[index].key);
     if (!state || state.values.build_mode !== next.values.build_mode) {
@@ -349,6 +388,7 @@
       gitBranch.title = next.gitBranch;
     }
     state = next;
+    renderGitTask(gitTaskStarted);
     if (catalogueChanged) pendingSelection.clear();
     for (const [key, input] of Object.entries(fields)) {
       if (document.activeElement !== input) input.value = state.values[key];
@@ -405,7 +445,7 @@
       expanded.clear();
       focusedKey = undefined;
     }
-    if (catalogueChanged || selectedOnly.checked && selectionChanged) renderGroups();
+    if (catalogueChanged || taskFilterChanged || selectedOnly.checked && selectionChanged) renderGroups();
   }
 
   function showNotice(title, text) {
@@ -459,6 +499,18 @@
   new QWebChannel(qt.webChannelTransport, channel => {
     bridge = channel.objects.wizard;
     bridge.changed.connect(renderState);
+    bridge.gitTaskProgress.connect(count => {
+      if (state?.gitTaskScope && !state.gitTaskCancelling) {
+        one("[data-git-task-scanned]").textContent = "Просмотрено коммитов " + count;
+      }
+    });
+    gitTaskKey.addEventListener("input", updateGitTaskButton);
+    gitTaskKey.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        findGitTask();
+      }
+    });
     bridge.stubsChanged.connect(renderStubs);
     bridge.journalOpened.connect(showJournal);
     bridge.notice.connect(showNotice);
@@ -480,7 +532,8 @@
       const name = button.dataset.action;
       if (name === "help") continue;
       const handler = name === "settings" ? showPreferences
-        : name === "git-connect" ? connectGit : () => bridge.command(name);
+        : name === "git-connect" ? connectGit
+        : name === "search-git-task" ? findGitTask : () => bridge.command(name);
       button.addEventListener("click", handler);
     }
     for (const button of all("[data-picker]")) {

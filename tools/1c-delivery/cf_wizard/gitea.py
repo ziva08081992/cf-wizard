@@ -1,6 +1,7 @@
 """Read-only Gitea transport and commit-pinned, sparse export files."""
 
 from base64 import b64decode
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from hashlib import new as hash_new, sha256
 from http.client import HTTPException
@@ -20,6 +21,7 @@ DEFAULT_GITEA = {
     "directory": "config", "branch": "", "interval": 60,
 }
 OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+MAX_COMMIT_PAGES = 10_000
 DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?\Z", re.I)
 
 
@@ -137,6 +139,56 @@ class GiteaClient:
             if len(result) == count:
                 raise GiteaError("Gitea повторила страницу списка веток.")
         raise GiteaError("Превышен предел страниц списка веток.")
+
+    def commits(self, revision, *, since, until, cancelled, report):
+        """Yield commit IDs and messages from the pinned revision."""
+        if not OID.fullmatch(revision):
+            raise ValueError("Неверный SHA открытой ревизии Gitea.")
+        params = {"sha": revision, "limit": 50, "files": "false", "stat": "false", "verification": "false"}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if until is not None:
+            params["until"] = until.isoformat()
+        seen = set()
+        for page in range(1, MAX_COMMIT_PAGES + 1):
+            if cancelled.is_set():
+                raise CancelledError
+            rows = self._json("commits", {**params, "page": page}, "Чтение истории коммитов")
+            if cancelled.is_set():
+                raise CancelledError
+            if not isinstance(rows, list):
+                raise GiteaError("Gitea вернула неверный список коммитов.")
+            if not rows:
+                return
+            entries = []
+            for row in rows:
+                sha = row.get("sha") if isinstance(row, dict) else None
+                commit = row.get("commit") if isinstance(row, dict) else None
+                message = commit.get("message") if isinstance(commit, dict) else None
+                if not isinstance(sha, str) or not OID.fullmatch(sha) or not isinstance(message, str):
+                    raise GiteaError("В истории Gitea не хватает SHA или сообщения коммита.")
+                if sha in seen:
+                    raise GiteaError("Gitea повторила коммит на страницах истории.")
+                seen.add(sha)
+                entries.append((sha, message))
+            report(len(seen))
+            yield from entries
+        raise GiteaError("Достигнут предел страниц истории Gitea.")
+
+    def commit_paths(self, sha):
+        if not OID.fullmatch(sha):
+            raise ValueError("Неверный SHA коммита Gitea.")
+        params = {"files": "true", "stat": "false", "verification": "false"}
+        row = self._json(f"git/commits/{sha}", params, "Чтение путей коммита")
+        if not isinstance(row, dict) or row.get("sha") != sha or not isinstance(row.get("files"), list):
+            raise GiteaError("Gitea не подтвердила список файлов коммита.")
+        paths = []
+        for item in row["files"]:
+            path = item.get("filename") if isinstance(item, dict) else None
+            if not isinstance(path, str) or "\0" in path or any(part in ("", ".", "..") for part in path.split("/")):
+                raise GiteaError("Gitea вернула неверный путь файла коммита.")
+            paths.append(path)
+        return paths
 
     def branch_sha(self, branch):
         if not branch:
