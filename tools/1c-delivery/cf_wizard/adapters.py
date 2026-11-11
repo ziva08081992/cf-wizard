@@ -247,7 +247,7 @@ class DesignerDependencyIndexes:
         started = perf_counter()
         log = create_journal(journal_directory(log_directory or self.default_logs, source.root))
         git = source.git
-        origin = (f"Gitea {git.client.repository}/{git.directory}, ветка {git.branch}, SHA {git.revision}"
+        origin = (f"{getattr(git.client, 'label', 'Gitea')} {git.client.repository}/{git.directory}, ветка {git.branch}, SHA {git.revision}"
                   if git is not None else f"локальная XML-выгрузка {source.root}")
         write_journal(log, f"Подготовка индекса зависимостей для {source.configuration}. Источник {origin}.")
         try:
@@ -268,7 +268,7 @@ class DesignerDependencyIndexes:
                 self.reader.verify_helper()
 
             if git is not None:
-                write_journal(log, "Подготовка XML-описаний из Gitea и кэша.")
+                write_journal(log, f"Подготовка XML-описаний из {getattr(source.git.client, 'label', 'Gitea')} и кэша.")
                 git.metadata(descriptors)
             path.parent.mkdir(parents=True, exist_ok=True)
             write_journal(log, f"Обработка XML и запись SQLite. Объектов в каталоге {len(descriptors)}.")
@@ -388,7 +388,7 @@ class TechnicalPackage:
             if source.git is not None:
                 checked = IndexReader.open(index, source.identity, HELPER_SHA256) if index and index.is_file() else None
                 if checked is None:
-                    raise ValueError("Создайте или обновите индекс выбранной ревизии Gitea.")
+                    raise ValueError("Создайте или обновите индекс выбранной ревизии Git.")
                 checked.close()
             before = descriptor_inventory(source.root, descriptors)
             plan = resolve_dependencies(self.reader.helper, source.root, selected,

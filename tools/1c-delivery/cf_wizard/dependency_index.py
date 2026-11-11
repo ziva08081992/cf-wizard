@@ -299,7 +299,7 @@ class IndexReader:
                 return documents
         except (OSError, sqlite3.Error):
             if self._pinned:
-                raise ValueError("Не удалось прочитать регистраторы из индекса Gitea. Обновите индекс.") from None
+                raise ValueError("Не удалось прочитать регистраторы из индекса Git. Обновите индекс.") from None
             self._valid_registrars = False
             self.hits["fallback"] += 1
         return None

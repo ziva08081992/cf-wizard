@@ -146,7 +146,7 @@ class Wizard:
     def find_git_task(self, source: ExportCatalog, query: GitTaskQuery, cancelled, report) -> GitTaskResult:
         git = source.git
         if git is None:
-            raise ValueError("Откройте нужную ветку Gitea.")
+            raise ValueError("Откройте нужную ветку Git.")
         key = re.compile(rf"(?<!\w){re.escape(query.key)}(?!\w)", re.IGNORECASE)
         matches = [sha for sha, message in git.client.commits(
             git.revision, since=query.since, until=query.until, cancelled=cancelled, report=report,
@@ -156,7 +156,7 @@ class Wizard:
         for sha in matches:
             if cancelled.is_set():
                 raise CancelledError
-            paths.update(path[len(prefix):] for path in git.client.commit_paths(sha) if path.startswith(prefix))
+            paths.update(path[len(prefix):] for path in git.client.commit_paths(sha, cancelled=cancelled, directory=git.directory) if path.startswith(prefix))
         if cancelled.is_set():
             raise CancelledError
         objects, unmapped = self.reader.objects_for_paths(source, paths) if paths else (frozenset(), 0)

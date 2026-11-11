@@ -1,4 +1,4 @@
-"""Windows Credential Manager adapter for personal Gitea tokens."""
+"""Windows Credential Manager adapter for personal Git service tokens."""
 
 import ctypes
 from ctypes import wintypes
@@ -63,7 +63,7 @@ class WindowsTokenStore:
             CredentialBlobSize=len(encoded),
             CredentialBlob=ctypes.addressof(buffer),
             Persist=CRED_PERSIST_LOCAL_MACHINE,
-            UserName="CF Wizard Gitea Pilot",
+            UserName="CF Wizard Git",
         )
         try:
             if not self.api.CredWriteW(ctypes.byref(entry), 0):
