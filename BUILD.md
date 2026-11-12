@@ -1,4 +1,4 @@
-# CF Wizard 0.7.1
+# CF Wizard 0.7.2
 
 Мастер собирает техническую CF из XML-выгрузки основной конфигурации 1С. В Windows он открывает локальную выгрузку или файлы выбранной ветки Gitea, показывает зависимости и готовит `.cf` с настройками объединения.
 
@@ -27,7 +27,7 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant(
 После подготовки окружения и скрипта выполните из той же папки.
 
 ```powershell
-& $python -B '.\tools\1c-delivery\build_cf_wizard_exe.py' '.\CF-Wizard-0.7.1-windows-x64.exe'
+& $python -B '.\tools\1c-delivery\build_cf_wizard_exe.py' '.\CF-Wizard-0.7.2-windows-x64.exe'
 ```
 
 Окно **Настройки** содержит пути, параметры сборки и подключение к Gitea. Для Gitea укажите свой HTTPS-адрес, репозиторий, каталог выгрузки, ветку и персональный токен на чтение. Справка доступна в мастере.
@@ -41,3 +41,13 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant(
 ```powershell
 & $python -B -m unittest discover -s tools/1c-delivery -p 'test_*.py'
 ```
+
+## Инструкция Word
+
+Канонический пользовательский текст находится в `docs/user-guide.md`, скриншоты — в `docs/images`. Для обновления Word в отдельном окружении установите `python-docx`, затем выполните:
+
+```powershell
+python tools/docs/build_user_guide.py
+```
+
+Генератор создаёт `docs/CF-Wizard-0.7.2-User-Guide-RU.docx`. После изменения проверьте все страницы в Word либо рендеринге; не публикуйте непроверенную вёрстку.

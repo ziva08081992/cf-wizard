@@ -38,7 +38,7 @@
   #cf-wizard-preview .cf-secondary { color: var(--cf-muted); }
   #cf-wizard-preview .cf-field-actions { display: flex; align-items: stretch; gap: 5px; min-width: 0; }
   #cf-wizard-preview .cf-platform-fields { display: grid; grid-template-columns: minmax(126px, 0.42fr) minmax(0, 1fr); gap: 8px; }
-  #cf-wizard-preview input[type="text"], #cf-wizard-preview input[type="search"], #cf-wizard-preview .cf-choice-toggle {
+  #cf-wizard-preview input[type="text"], #cf-wizard-preview input[type="search"], #cf-wizard-preview input[type="number"], #cf-wizard-preview .cf-choice-toggle {
     background: var(--cf-input); border: 1px solid var(--cf-border); color: var(--cf-text); padding: 6px 9px;
     border-radius: 5px; width: 100%; min-width: 0; height: 32px; font: inherit;
   }
@@ -89,7 +89,9 @@
   #cf-wizard-preview .cf-git-task { display: grid; gap: 6px; margin-bottom: 9px; padding: 8px; background: var(--cf-window); border: 1px solid var(--cf-border); border-radius: 5px; }
   #cf-wizard-preview .cf-git-task-fields { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 6px; }
   #cf-wizard-preview .cf-task-key { flex: 1 1 110px; }
-  #cf-wizard-preview .cf-git-task select { min-height: 32px; padding: 4px 6px; background: var(--cf-bar); color: var(--cf-text); border: 1px solid var(--cf-border); border-radius: 5px; font: inherit; }
+  #cf-wizard-preview .cf-period-picker { width: 164px; }
+  #cf-wizard-preview .cf-task-days { flex: 0 0 76px; width: 76px; }
+  #cf-wizard-preview .cf-task-error { margin: 0; color: #f2a9a9; font-size: 12px; }
   #cf-wizard-preview .cf-task-meta { margin: 0; color: var(--cf-muted); font-size: 12px; overflow-wrap: anywhere; }
   #cf-wizard-preview .cf-git-task-result { display: grid; gap: 6px; }
   #cf-wizard-preview .cf-git-task-actions { display: flex; flex-wrap: wrap; gap: 6px; }

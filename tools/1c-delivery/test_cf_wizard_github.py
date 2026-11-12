@@ -272,6 +272,18 @@ class GitHubReads(unittest.TestCase):
             source=GitFiles(self.client,'config','main',REV,{'A.xml':blob(data)},Path(temp))
             with self.assertRaises(GitError): source._put('A.xml',data)
 
+    def test_custom_days_reach_github_http_with_pinned_revision(self):
+        from datetime import timedelta
+        from cf_wizard.application import GitTaskQuery
+        query = GitTaskQuery.create('ERP-123', False, 14)
+        result = list(self.client.commits(REV, since=query.since, until=query.until,
+                                         cancelled=Event(), report=lambda _: None))
+        self.assertEqual(result, [])
+        params = parse_qs(urlsplit(self.http.requests[-1].full_url).query)
+        self.assertEqual((params['sha'], params['since'], params['until']),
+                         ([REV], [query.since.isoformat()], [query.until.isoformat()]))
+        self.assertEqual(query.until - query.since, timedelta(days=14))
+
     def test_history_pagination_validation_and_cancellation(self):
         stop=Event(); report=[]
         rows=[[dict(sha=REV,commit=dict(message='ERP-123'))],[dict(sha=OLD,commit=dict(message='ERP-1234'))],[]]

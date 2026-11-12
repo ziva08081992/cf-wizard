@@ -1,7 +1,7 @@
 """Gitea task filtering over the real catalogue reader and synthetic responses."""
 
 from concurrent.futures import CancelledError
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -151,6 +151,41 @@ class GitTaskTests(unittest.TestCase):
         self.assertEqual([entry.args[0] for entry in request.call_args_list], [
             "commits", "commits", f"git/commits/{MATCH}",
         ])
+
+    def test_custom_days_define_exact_utc_range_and_gitea_request(self):
+        for days in (1, 14, 365, "14"):
+            with self.subTest(days=days):
+                query = GitTaskQuery.create("ERP-123", False, days)
+                self.assertEqual(query.until - query.since, timedelta(days=int(days)))
+                self.assertEqual(query.until.tzinfo, timezone.utc)
+                with patch.object(self.client, "_json", return_value=[]) as request:
+                    self.search(query)
+                params = request.call_args.args[1]
+                self.assertEqual((params["sha"], params["since"], params["until"]),
+                                 (REVISION, query.since.isoformat(), query.until.isoformat()))
+
+    def test_invalid_days_are_rejected_before_http(self):
+        with patch.object(self.client, "_json") as request:
+            for days in ("", "abc", 0, "0", -1, "-1", 1.5, "1.5", True, None, 50000, 10**100):
+                with self.subTest(days=days), self.assertRaises(ValueError):
+                    self.search(GitTaskQuery.create("ERP-123", False, days))
+            request.assert_not_called()
+
+    def test_git_date_boundary_is_inclusive_and_rejects_older_dates(self):
+        current = datetime(2026, 11, 11, tzinfo=timezone.utc)
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        days = (current-epoch).days
+        with patch("cf_wizard.application.datetime") as clock:
+            clock.now.return_value = current
+            self.assertEqual(GitTaskQuery.create("ERP-123", False, days).since, epoch)
+            with self.assertRaisesRegex(ValueError, "Вся история"):
+                GitTaskQuery.create("ERP-123", False, days+1)
+
+    def test_all_history_ignores_unused_days(self):
+        for days in ("", "bad", 0, -1, 10**100):
+            query = GitTaskQuery.create("ERP-123", True, days)
+            self.assertIsNone(query.since)
+            self.assertIsNone(query.until)
 
     def test_invalid_key_is_rejected_without_request(self):
         for value in ("", "ERP-123, ERP-124", "ERP-123/abc", "ERP", "Я-123"):
