@@ -64,16 +64,28 @@
               <label for="cf-git-task-key">Номер задачи Git</label>
               <input id="cf-git-task-key" type="search" placeholder="ERP-123" maxlength="64" autocomplete="off" spellcheck="false" disabled>
             </div>
-            <div class="cf-field">
-              <label for="cf-git-task-period">Период поиска</label>
-              <select id="cf-git-task-period" disabled>
-                <option value="recent">Последние 90 дней</option>
-                <option value="all">Вся история</option>
-              </select>
+            <div class="cf-field cf-choice-picker cf-period-picker">
+              <label id="cf-git-task-period-label" for="cf-git-task-period">Период поиска</label>
+              <button type="button" id="cf-git-task-period" class="cf-choice-toggle" value="recent"
+                      aria-controls="cf-git-task-period-options" aria-haspopup="menu" aria-expanded="false"
+                      aria-labelledby="cf-git-task-period-label cf-git-task-period-value" disabled>
+                <span id="cf-git-task-period-value">Последние 90 дней</span>
+              </button>
+              <div id="cf-git-task-period-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-git-task-period-label">
+                <button type="button" role="menuitemradio" value="recent" tabindex="-1" aria-checked="true">Последние 90 дней</button>
+                <button type="button" role="menuitemradio" value="custom" tabindex="-1" aria-checked="false">Указать дни…</button>
+                <button type="button" role="menuitemradio" value="all" tabindex="-1" aria-checked="false">Вся история</button>
+              </div>
+            </div>
+            <div class="cf-field cf-task-days" data-git-task-days hidden>
+              <label for="cf-git-task-days">Дней</label>
+              <input id="cf-git-task-days" type="number" min="1" step="1" value="90" required disabled
+                     aria-describedby="cf-git-task-days-error" title="Положительное целое количество суток до текущего момента">
             </div>
             <button type="button" class="cf-button" data-action="search-git-task" disabled><i data-lucide="search" aria-hidden="true"></i>Найти</button>
             <button type="button" class="cf-button" data-action="cancel-git-task" hidden>Отменить</button>
           </div>
+          <p class="cf-task-error" id="cf-git-task-days-error" role="status" hidden>Укажите целое количество дней больше нуля.</p>
           <p class="cf-task-meta" data-git-task-hint>Откройте выбранную ветку для поиска по задаче.</p>
           <div class="cf-task-meta" data-git-task-progress role="status" hidden>
             <div data-git-task-scope></div><div data-git-task-scanned></div>
@@ -241,7 +253,7 @@
       <ol>
         <li>Мастер открывает сохранённую выгрузку при запуске. Путь к локальной папке или <code>Configuration.xml</code> можно выбрать в <strong>Настройках</strong>. Для открытия по введённому пути нажмите <strong>Открыть выгрузку</strong>.</li>
         <li>Для Gitea или GitHub выберите <strong>Git</strong>. В окне <strong>Настройки → Подключение Git</strong> выберите API сервиса и введите персональный токен на чтение. Для GitHub.com используйте PAT только нужного репозитория с Contents: Read-only. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>
-        <li>Чтобы отобрать объекты по задаче, введите <strong>Номер задачи Git</strong>, выберите период и нажмите <strong>Найти</strong>. По умолчанию проверяются последние 90 дней. <strong>Отметить найденные</strong> добавляет найденные объекты к уже отмеченным. Комплект использует состояние объектов в открытой ревизии ветки.</li>
+        <li>Чтобы отобрать объекты по задаче, введите <strong>Номер задачи Git</strong>, выберите период и нажмите <strong>Найти</strong>. По умолчанию проверяются последние 90 дней. Для своего интервала выберите <strong>Указать дни…</strong> и введите целое число больше нуля; <strong>Вся история</strong> снимает ограничение дат. <strong>Отметить найденные</strong> добавляет найденные объекты к уже отмеченным. Комплект использует состояние объектов в открытой ревизии ветки.</li>
         <li>GitHub загружает XML для индекса пакетами, без полного архива репозитория. Отбор задачи учитывает полный список путей; merge сравнивается с первым родителем. Токены Gitea и GitHub хранятся раздельно.</li>
         <li>Подготовьте отдельный индекс ветки кнопкой <strong>Создать индекс</strong>. Мастер получает XML-описания и затем запрашивает файлы выбранных объектов по мере работы. При смене источника можно выбрать папку SQLite. Интервал проверки SHA задаётся в настройках подключения Git. Значение 0 выключает проверку.</li>
         <li>В необязательное поле можно вписать номер задачи, дату или комментарий. Мастер использует текст в имени папки комплекта и заменяет недопустимые символы.</li>

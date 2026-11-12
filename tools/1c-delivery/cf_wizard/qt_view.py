@@ -471,14 +471,14 @@ class WizardBridge(QObject):
         self.task.signals.finished.connect(completed, Qt.ConnectionType.QueuedConnection)
         QThreadPool.globalInstance().start(self.task)
 
-    @Slot(str, bool)
-    def searchGitTask(self, value, all_history):
+    @Slot(str, bool, str)
+    def searchGitTask(self, value, all_history, days="90"):
         if self.task is not None or not self._git_task_available():
             return
         try:
-            query = GitTaskQuery.create(value, all_history)
+            query = GitTaskQuery.create(value, all_history, days)
         except ValueError as error:
-            self.notice.emit("Номер задачи Git", str(error))
+            self.notice.emit("Поиск по задаче Git", str(error))
             return
 
         catalog = self.catalog

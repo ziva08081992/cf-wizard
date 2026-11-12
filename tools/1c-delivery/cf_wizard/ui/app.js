@@ -19,6 +19,8 @@
   const gitBranchMenu = one("#cf-git-branch-options");
   const gitTaskKey = one("#cf-git-task-key");
   const gitTaskPeriod = one("#cf-git-task-period");
+  const gitTaskPeriodMenu = one("#cf-git-task-period-options");
+  const gitTaskDays = one("#cf-git-task-days");
   const groupIcons = {
     Subsystem: "layers", CommonModule: "code-xml", Document: "files",
     Catalog: "book-open", DataProcessor: "settings-2", InformationRegister: "table-2",
@@ -323,7 +325,13 @@
   }
 
   function updateGitTaskButton() {
-    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || !gitTaskKey.value.trim();
+    const custom = gitTaskPeriod.value === "custom";
+    const valid = !custom || (Number.isSafeInteger(gitTaskDays.valueAsNumber) && gitTaskDays.valueAsNumber > 0);
+    one("[data-git-task-days]").hidden = !custom;
+    gitTaskDays.disabled = !custom || !state?.gitTaskReady || state.busy;
+    gitTaskDays.setAttribute("aria-invalid", String(!valid));
+    one("#cf-git-task-days-error").hidden = valid;
+    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || !gitTaskKey.value.trim() || !valid;
   }
 
   function renderGitTask(started) {
@@ -332,6 +340,9 @@
     one("[data-git-task]").hidden = state.sourceMode !== "git";
     one("[data-git-task-hint]").hidden = state.gitTaskReady;
     gitTaskKey.disabled = gitTaskPeriod.disabled = state.busy || !state.gitTaskReady;
+    if ((gitTaskPeriod.disabled || state.sourceMode !== "git") && !gitTaskPeriodMenu.hidden) {
+      setChoiceMenu(gitTaskPeriod, gitTaskPeriodMenu, false);
+    }
     updateGitTaskButton();
     action("cancel-git-task").hidden = !scope;
     action("cancel-git-task").disabled = state.gitTaskCancelling;
@@ -351,7 +362,8 @@
 
   function findGitTask() {
     if (!action("search-git-task").disabled) {
-      bridge.searchGitTask(gitTaskKey.value, gitTaskPeriod.value === "all");
+      const days = gitTaskPeriod.value === "custom" ? String(gitTaskDays.valueAsNumber) : "90";
+      bridge.searchGitTask(gitTaskKey.value, gitTaskPeriod.value === "all", days);
     }
   }
 
@@ -504,13 +516,15 @@
         one("[data-git-task-scanned]").textContent = "Просмотрено коммитов " + count;
       }
     });
-    gitTaskKey.addEventListener("input", updateGitTaskButton);
-    gitTaskKey.addEventListener("keydown", event => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        findGitTask();
-      }
-    });
+    for (const input of [gitTaskKey, gitTaskDays]) {
+      input.addEventListener("input", updateGitTaskButton);
+      input.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          findGitTask();
+        }
+      });
+    }
     bridge.stubsChanged.connect(renderStubs);
     bridge.journalOpened.connect(showJournal);
     bridge.notice.connect(showNotice);
@@ -519,6 +533,11 @@
     }
     bindChoiceMenu(buildMode, buildMenu, value => bridge.editField("build_mode", value));
     bindChoiceMenu(gitBranch, gitBranchMenu, value => bridge.setGitBranch(value));
+    bindChoiceMenu(gitTaskPeriod, gitTaskPeriodMenu, value => {
+      gitTaskPeriod.value = value;
+      renderChoice(gitTaskPeriodMenu, one("#cf-git-task-period-value"), value);
+      updateGitTaskButton();
+    });
     for (const button of sourceButtons) {
       button.addEventListener("click", () => bridge.setSourceMode(button.dataset.sourceMode));
     }

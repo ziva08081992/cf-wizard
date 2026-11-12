@@ -1,10 +1,13 @@
 """Native connection form and WebEngine flow, isolated from user credentials."""
 import json
+from datetime import datetime, timedelta
+from threading import Event
 import os
 from pathlib import Path
 import time
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 try:
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     QT = True
@@ -56,6 +59,119 @@ class GitQtTests(unittest.TestCase):
         self.assertEqual(dialog.fields['server'].text(),'https://gitea.example.test')
         dialog.close(); dialog.deleteLater()
 
+    def check_choice_menus(self, window, http):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        # No platform-rendered HTML select may bypass the shared dark menu.
+        self.assertEqual(self.js(window, "document.querySelectorAll('select').length"), 0)
+        self.assertEqual(json.loads(self.js(window, "JSON.stringify(Array.from(document.querySelectorAll('.cf-choice-menu')).map(m => getComputedStyle(m).backgroundColor))")),
+                         ['rgb(43, 45, 48)'] * 3)
+        self.assertEqual(self.js(window, "document.querySelector('#cf-git-task-period').value"), 'recent')
+        self.js(window, "document.querySelector('#cf-git-task-key').value='ERP-123'; document.querySelector('#cf-git-task-key').dispatchEvent(new Event('input'))")
+        period = "document.querySelector('#cf-git-task-period')"
+        menu = "document.querySelector('#cf-git-task-period-options')"
+        self.js(window, period + '.click()')
+        self.assertFalse(self.js(window, menu + '.hidden'))
+        # Hover must move one highlight, without changing the selected period.
+        for value in ('all', 'recent', 'all'):
+            option = menu + f".querySelector('[value={value}]')"
+            xy = json.loads(self.js(window, "JSON.stringify((() => {const r=" + option + ".getBoundingClientRect(); return [r.x+r.width/2,r.y+r.height/2];})())"))
+            QTest.mouseMove(window.view.focusProxy(), QPoint(round(xy[0]), round(xy[1])))
+            self.wait(lambda: self.js(window, 'document.activeElement.value') == value)
+            self.assertEqual(self.js(window, menu + ".querySelectorAll(':focus').length"), 1)
+            self.assertEqual(self.js(window, period + '.value'), 'recent')
+            self.assertEqual(self.js(window, 'getComputedStyle(document.activeElement).backgroundColor'), 'rgb(39, 59, 96)')
+            self.assertNotEqual(self.js(window, 'getComputedStyle(document.activeElement).color'), 'rgb(0, 0, 0)')
+        # Commit the hovered option with the keyboard, then verify real search queries.
+        QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Return)
+        self.wait(lambda: self.js(window, period + '.value') == 'all')
+        for value in ('all', 'recent'):
+            if value == 'recent':
+                self.js(window, period + '.focus()')
+                QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Down)
+                self.assertEqual(self.js(window, 'document.activeElement.value'), 'all')
+                QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Home)
+                QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Return)
+            self.assertEqual(self.js(window, menu + ".querySelector('[aria-checked=true]').value"), value)
+            self.assertEqual(self.js(window, "document.querySelector('#cf-git-task-period-value').textContent"),
+                             'Вся история' if value == 'all' else 'Последние 90 дней')
+            before = len(http.requests)
+            self.js(window, "document.querySelector('[data-action=search-git-task]').click()")
+            self.wait(lambda: window.bridge.task is None and len(http.requests) > before)
+            queries = [parse_qs(urlsplit(r.full_url).query) for r in http.requests[before:]
+                       if urlsplit(r.full_url).path.endswith('/commits')]
+            self.assertTrue(queries)
+            self.assertEqual('since' in queries[0], value == 'recent')
+            self.wait(lambda: self.js(window, period + '.disabled') is False)
+        self.check_custom_task_period(window, http)
+        self.js(window, period + '.click()')
+        QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Escape)
+        self.wait(lambda: self.js(window, menu + '.hidden') is True)
+        self.assertEqual(self.js(window, 'document.activeElement.id'), 'cf-git-task-period')
+        # Leave the metadata tree unfiltered for the index/preview flow below.
+        self.js(window, "document.querySelector('[data-action=clear-git-task]').click()")
+        self.wait(lambda: window.bridge.snapshot()['gitTaskResult'] is None)
+
+    def check_custom_task_period(self, window, http):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        period = "document.querySelector('#cf-git-task-period')"
+        menu = "document.querySelector('#cf-git-task-period-options')"
+        days = "document.querySelector('#cf-git-task-days')"
+        find = "document.querySelector('[data-action=search-git-task]')"
+        self.js(window, period + ".click(); " + menu + ".querySelector('[value=custom]').click()")
+        self.assertFalse(self.js(window, "document.querySelector('[data-git-task-days]').hidden"))
+        self.js(window, days + '.focus()')
+        QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        QTest.keyClicks(window.view.focusProxy(), '14')
+        self.wait(lambda: self.js(window, days + '.value') == '14')
+        started, release = Event(), Event()
+        original_open = http.open
+        def delayed(request, *args, **kwargs):
+            if urlsplit(request.full_url).path.endswith('/commits'):
+                started.set()
+                if not release.wait(10): raise RuntimeError('Synthetic HTTP release timed out')
+            return original_open(request, *args, **kwargs)
+        before = len(http.requests)
+        with patch.object(window.bridge.git_client._opener, 'open', side_effect=delayed):
+            QTest.keyClick(window.view.focusProxy(), Qt.Key.Key_Return)
+            try:
+                self.wait(started.is_set)
+                self.wait(lambda: self.js(window, days + '.disabled') is True)
+                self.assertTrue(self.js(window, period + '.disabled'))
+            finally:
+                release.set()
+            self.wait(lambda: window.bridge.task is None and len(http.requests) > before)
+        params = [parse_qs(urlsplit(r.full_url).query) for r in http.requests[before:]
+                  if urlsplit(r.full_url).path.endswith('/commits')][0]
+        self.assertEqual(datetime.fromisoformat(params['until'][0])-datetime.fromisoformat(params['since'][0]),
+                         timedelta(days=14))
+        self.assertEqual(params['sha'], [window.bridge.catalog.git.revision])
+        self.wait(lambda: self.js(window, days + '.disabled') is False)
+        previous = window.bridge.git_task_filter
+        selected = window.bridge.selected.copy()
+        before = len(http.requests)
+        for value in ('', '0', '-2', '1.5', '1e50'):
+            self.js(window, days + '.value=' + json.dumps(value) + '; ' + days + ".dispatchEvent(new Event('input'))")
+            self.assertTrue(self.js(window, find + '.disabled'))
+            self.assertFalse(self.js(window, "document.querySelector('#cf-git-task-days-error').hidden"))
+            self.js(window, find + '.click()')
+            self.assertEqual(len(http.requests), before)
+            self.assertIs(window.bridge.git_task_filter, previous)
+            self.assertEqual(window.bridge.selected, selected)
+        # The bridge also rejects date overflow before starting any HTTP worker.
+        for invalid in ('50000', '1000000000'):
+            window.bridge.searchGitTask('ERP-123', False, invalid)
+            self.assertIsNone(window.bridge.task)
+            self.assertEqual(len(http.requests), before)
+            self.assertIs(window.bridge.git_task_filter, previous)
+            self.wait(lambda: self.js(window, "document.querySelector('dialog[aria-labelledby=cf-dialog-title]').open") is True)
+            self.js(window, "document.querySelector('dialog[aria-labelledby=cf-dialog-title]').close()")
+        self.js(window, period + ".click(); " + menu + ".querySelector('[value=all]').click()")
+        self.assertTrue(self.js(window, "document.querySelector('[data-git-task-days]').hidden"))
+        self.assertTrue(self.js(window, days + '.disabled'))
+        self.assertFalse(self.js(window, find + '.disabled'))
+
     def test_connection_open_index_preview_and_preserved_state_on_failure(self):
         from cf_wizard.qt_view import QtWizardWindow
         from cf_wizard.qt_git_dialog import GitConnectionDialog
@@ -89,6 +205,7 @@ class GitQtTests(unittest.TestCase):
         bridge.command('open-source'); self.wait(lambda:bridge.task is None and bridge.catalog is not None)
         self.assertIn('GitHub',bridge.snapshot()['activeSource'])
         self.assertEqual(self.js(window,"document.querySelector('[data-source-mode=git]').textContent.trim()"),'Git')
+        self.check_choice_menus(window, http)
         bridge.command('refresh-index'); self.wait(lambda:bridge.task is None)
         self.assertIsNotNone(bridge.index_file)
         bridge.markObject(DOCUMENT,True); bridge.command('preview'); self.wait(lambda:bridge.task is None)

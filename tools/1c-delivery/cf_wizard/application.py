@@ -38,14 +38,30 @@ class GitTaskQuery:
     until: datetime | None
 
     @classmethod
-    def create(cls, value: str, all_history: bool):
+    def create(cls, value: str, all_history: bool, days: int | str = 90):
         key = value.strip()
         if len(key) > 64 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", key):
             raise ValueError("Укажите номер задачи Git в формате ERP-123.")
         if all_history:
             return cls(key.upper(), None, None)
+        invalid_days = "Укажите целое количество дней больше нуля."
+        if type(days) is str:
+            if not re.fullmatch(r"[0-9]+", days.strip()):
+                raise ValueError(invalid_days)
+            try:
+                days = int(days)
+            except ValueError:
+                raise ValueError(invalid_days) from None
+        if type(days) is not int or days < 1:
+            raise ValueError(invalid_days)
         until = datetime.now(timezone.utc).replace(microsecond=0)
-        return cls(key.upper(), until - timedelta(days=90), until)
+        try:
+            since = until - timedelta(days=days)
+        except OverflowError:
+            raise ValueError("Слишком большой период поиска: дата начала выходит за допустимые границы.") from None
+        if since.year < 1970 or until.year > 2099:
+            raise ValueError("Период поиска должен оставаться в пределах 1970–2099 годов. Уменьшите число дней или выберите «Вся история».")
+        return cls(key.upper(), since, until)
 
 
 @dataclass(frozen=True)

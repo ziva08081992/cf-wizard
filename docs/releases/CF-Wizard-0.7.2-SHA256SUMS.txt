@@ -1,0 +1,2 @@
+0674afe630c5db51ecb7f2bd5935bdc343c88a4590bf45d09d9d7755dcbec090  CF-Wizard-0.7.2-windows-x64.exe
+abac9e1fbc29d3a91c44b1c8fd2d7b6dc633e9c3270f1f881f4e08df22cca8df  CF-Wizard-0.7.2-User-Guide-RU.docx
