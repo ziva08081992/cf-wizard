@@ -1,0 +1,38 @@
+[workspace]
+members = ["crates/domain", "crates/application", "crates/infrastructure", "crates/desktop"]
+resolver = "3"
+[workspace.package]
+version = "0.8.0-rust.2"
+edition = "2024"
+publish = false
+[workspace.dependencies]
+cf-domain = { path = "crates/domain" }
+cf-application = { path = "crates/application" }
+cf-infrastructure = { path = "crates/infrastructure" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sha1 = "0.10"
+hex = "0.4"
+thiserror = "2"
+xmlparser = "0.13.6"
+flate2 = "1"
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "query", "native-tls", "system-proxy"] }
+regex = "1"
+tempfile = "3"
+fs2 = "0.4"
+uuid = { version = "1", features = ["v4", "v5"] }
+chrono = { version = "0.4", features = ["serde"] }
+zeroize = "1"
+url = "2"
+base64 = "0.22"
+tao = "0.34.8"
+wry = "=0.57.2"
+rfd = "0.15"
+unicode-ident = "1"
+unicode-casefold = "0.2"
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

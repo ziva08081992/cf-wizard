@@ -1,0 +1,12 @@
+[package]
+name = "cf-wizard-rust-startup-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[dependencies]
+tao = "0.34"
+wry = "=0.57.2"
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

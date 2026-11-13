@@ -1,0 +1,102 @@
+[
+  {
+    "scenario": "cold",
+    "inputs": 1003,
+    "open_ms": 19.646,
+    "check_ms": 0.001,
+    "update_ms": 6682.101,
+    "ready": false,
+    "requests": {
+      "head": 1,
+      "root_tree": 1,
+      "file": 1,
+      "tree": 2,
+      "batch": 51,
+      "downloaded": 1002
+    },
+    "sqlite_bytes": 221184,
+    "path_read_bytes_calls": {
+      "xml_open": 2,
+      "xml_update": 2008,
+      "blob_cache_update": 1
+    },
+    "counts": {
+      "added": 1002,
+      "changed": 0,
+      "removed": 0,
+      "unchanged": 0
+    },
+    "journal": [
+      "2026-11-12 22:04:39  Входов 1003, пропущено неизменных XML 0, обработано XML 1003, извлечено фактов 1002.",
+      "2026-11-12 22:04:39  XML-входы: добавлено 1003, изменено 0, удалено 0. Счётчик обработки не включает повторные чтения кэша и проверки Git hash."
+    ]
+  },
+  {
+    "scenario": "same_sha",
+    "inputs": 1003,
+    "open_ms": 13.961,
+    "check_ms": 3.57,
+    "update_ms": 0.148,
+    "ready": true,
+    "requests": {
+      "head": 1,
+      "root_tree": 1,
+      "tree": 2
+    },
+    "sqlite_bytes": 221184,
+    "path_read_bytes_calls": {
+      "xml_open": 3
+    },
+    "counts": null
+  },
+  {
+    "scenario": "bsl_only",
+    "inputs": 1003,
+    "open_ms": 18.864,
+    "check_ms": 3.728,
+    "update_ms": 0.001,
+    "ready": true,
+    "requests": {
+      "head": 1,
+      "root_tree": 1,
+      "tree": 2
+    },
+    "sqlite_bytes": 221184,
+    "path_read_bytes_calls": {
+      "xml_open": 2,
+      "blob_cache_open": 2
+    },
+    "counts": null
+  },
+  {
+    "scenario": "one_xml",
+    "inputs": 1003,
+    "open_ms": 18.154,
+    "check_ms": 0.351,
+    "update_ms": 43.312,
+    "ready": false,
+    "requests": {
+      "head": 1,
+      "root_tree": 1,
+      "tree": 2,
+      "batch": 1,
+      "downloaded": 1
+    },
+    "sqlite_bytes": 221184,
+    "path_read_bytes_calls": {
+      "xml_open": 2,
+      "xml_update": 2,
+      "blob_cache_open": 2
+    },
+    "counts": {
+      "added": 0,
+      "changed": 1,
+      "removed": 0,
+      "unchanged": 1001
+    },
+    "journal": [
+      "2026-11-12 22:04:39  Входов 1003, пропущено неизменных XML 1002, обработано XML 1, извлечено фактов 1.",
+      "2026-11-12 22:04:39  XML-входы: добавлено 0, изменено 1, удалено 0. Счётчик обработки не включает повторные чтения кэша и проверки Git hash."
+    ]
+  }
+]

@@ -52,6 +52,18 @@ def main() -> int:
     window = QtWizardWindow(Wizard(reader, TechnicalPackage(reader, logs), indexes), platforms,
                             paths, settings.save, logs, diagnostics)
     window.show()
+    # Opt-in smoke probe for the frozen distribution, using an isolated profile.
+    import os
+    if report := os.environ.get("CF_WIZARD_STARTUP_REPORT"):
+        import json
+        from PySide6.QtCore import QTimer
+        from cf_wizard import __version__
+
+        def report_ready(ok):
+            Path(report).write_text(json.dumps({"version": __version__, "webengine_loaded": bool(ok)}), encoding="utf8")
+            QTimer.singleShot(100, app.quit)
+
+        window.view.loadFinished.connect(report_ready)
     return app.exec()
 
 

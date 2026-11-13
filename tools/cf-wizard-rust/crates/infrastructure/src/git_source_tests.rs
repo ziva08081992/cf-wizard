@@ -1,0 +1,230 @@
+use super::*;
+use crate::git::Commit;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use sha1::{Digest, Sha1};
+use std::sync::atomic::{AtomicUsize, Ordering};
+fn hash(bytes: &[u8]) -> String {
+    let mut h = Sha1::new();
+    h.update(format!("blob {}\0", bytes.len()));
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+struct Memory {
+    data: BTreeMap<String, Vec<u8>>,
+    dirs: BTreeMap<String, Vec<Entry>>,
+    reads: Mutex<BTreeMap<String, usize>>,
+    trees: AtomicUsize,
+    revision: AtomicUsize,
+    cancel_after: AtomicUsize,
+}
+impl Memory {
+    fn new() -> Arc<Self> {
+        let row = crate::engine::tests::rows();
+        let data = row["cases"][0]["source"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(p, b)| {
+                (
+                    format!("config/{p}"),
+                    STANDARD.decode(b.as_str().unwrap()).unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut dirs = BTreeMap::<String, BTreeMap<String, Entry>>::new();
+        for (path, data) in &data {
+            let mut parent = String::new();
+            let parts = path.split('/').collect::<Vec<_>>();
+            for (i, part) in parts.iter().enumerate() {
+                let next = if parent.is_empty() {
+                    part.to_string()
+                } else {
+                    format!("{parent}/{part}")
+                };
+                let file = i == parts.len() - 1;
+                dirs.entry(parent.clone()).or_default().insert(
+                    part.to_string(),
+                    Entry {
+                        name: part.to_string(),
+                        oid: if file { hash(data) } else { next.clone() },
+                        size: if file { data.len() as u64 } else { 0 },
+                        kind: if file {
+                            EntryKind::Blob
+                        } else {
+                            EntryKind::Tree
+                        },
+                        mode: if file { "100644" } else { "040000" }.into(),
+                    },
+                );
+                parent = next;
+            }
+        }
+        Arc::new(Self {
+            data,
+            dirs: dirs
+                .into_iter()
+                .map(|(p, e)| (p, e.into_values().collect()))
+                .collect(),
+            reads: Mutex::new(BTreeMap::new()),
+            trees: AtomicUsize::new(0),
+            revision: AtomicUsize::new(1),
+            cancel_after: AtomicUsize::new(usize::MAX),
+        })
+    }
+}
+impl GitProvider for Memory {
+    fn branches(&self, _: &Cancellation) -> Result<Vec<String>> {
+        Ok(vec!["main".into(), "other".into()])
+    }
+    fn head(&self, _: &str, c: &Cancellation) -> Result<String> {
+        c.check()?;
+        Ok(format!("{:040x}", self.revision.load(Ordering::Relaxed)))
+    }
+    fn root(&self, _: &str, _: &Cancellation) -> Result<String> {
+        Ok(String::new())
+    }
+    fn tree(&self, id: &str, c: &Cancellation) -> Result<Vec<Entry>> {
+        c.check()?;
+        let count = self.trees.fetch_add(1, Ordering::Relaxed) + 1;
+        if count == self.cancel_after.load(Ordering::Relaxed) {
+            c.cancel();
+        }
+        Ok(self.dirs.get(id).cloned().unwrap_or_default())
+    }
+    fn file(&self, _: &str, path: &str, e: &Entry, c: &Cancellation) -> Result<Vec<u8>> {
+        c.check()?;
+        *self.reads.lock().unwrap().entry(path.into()).or_default() += 1;
+        let data = self.data.get(path).unwrap().clone();
+        verify_blob(&data, &e.oid, e.size)?;
+        Ok(data)
+    }
+    fn commits(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+        _: &Cancellation,
+        _: &dyn Fn(usize),
+    ) -> Result<Vec<Commit>> {
+        Ok(vec![])
+    }
+    fn changed(&self, _: &str, _: &str, _: &Cancellation) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+}
+fn connection(root: &Path) -> Connection {
+    Connection {
+        server: "https://example.test".into(),
+        repository: "owner/repo".into(),
+        branch: "main".into(),
+        cache: root.to_string_lossy().into(),
+        ..Connection::default()
+    }
+}
+#[test]
+fn restart_and_new_sha_reuse_manifest_index_and_shared_blobs() {
+    let root = tempfile::tempdir().unwrap();
+    let api = Memory::new();
+    let c = Cancellation::default();
+    let conn = connection(&root.path().join("cache"));
+    let first = GitSource::open(&conn, api.clone(), &c).unwrap();
+    assert_eq!(
+        api.reads.lock().unwrap().len(),
+        1,
+        "opening reads Configuration only"
+    );
+    let index_dir = root.path().join("indexes");
+    crate::indexing::update(&first, &index_dir, &c, &|_, _| {}).unwrap();
+    assert!(crate::indexing::status(&first, &index_dir).unwrap().ready);
+    let reads = api.reads.lock().unwrap().clone();
+    api.revision.store(2, Ordering::Relaxed);
+    let second = GitSource::open(&conn, api.clone(), &c).unwrap();
+    assert_eq!(
+        first.manifest.fingerprint().unwrap(),
+        second.manifest.fingerprint().unwrap()
+    );
+    assert_ne!(
+        first.snapshot(&c).unwrap(),
+        second.snapshot(&c).unwrap(),
+        "plan remains SHA-bound"
+    );
+    assert!(crate::indexing::status(&second, &index_dir).unwrap().ready);
+    let report = crate::indexing::update(&second, &index_dir, &c, &|_, _| {}).unwrap();
+    assert_eq!(report.xml_reads, 0);
+    assert_eq!(
+        *api.reads.lock().unwrap(),
+        reads,
+        "new SHA does not redownload unchanged XML"
+    );
+    let third = GitSource::open(&conn, api.clone(), &c).unwrap();
+    assert_eq!(*api.reads.lock().unwrap(), reads);
+    let root_config = third.files.root.join("Configuration.xml");
+    let entry = third.files.blob("Configuration.xml", &c).unwrap().unwrap();
+    fs::write(&root_config, b"corrupt").unwrap();
+    fs::write(third.files.blobs.join(&entry.oid), b"corrupt").unwrap();
+    assert_eq!(
+        third.read("Configuration.xml", &c).unwrap(),
+        api.data["config/Configuration.xml"]
+    );
+    assert_eq!(
+        api.reads.lock().unwrap()["config/Configuration.xml"],
+        reads["config/Configuration.xml"] + 1
+    );
+}
+#[test]
+fn directory_traversal_stops_after_cancelled_subtree_request() {
+    let root = tempfile::tempdir().unwrap();
+    let api = Memory::new();
+    let c = Cancellation::default();
+    let source = GitSource::open(&connection(root.path()), api.clone(), &c).unwrap();
+    let before = api.trees.load(Ordering::Relaxed);
+    api.cancel_after.store(before + 1, Ordering::Relaxed);
+    assert!(matches!(
+        source.files_below("CommonModules/А", &c),
+        Err(Error::Cancelled)
+    ));
+    assert_eq!(api.trees.load(Ordering::Relaxed), before + 1);
+}
+#[test]
+fn wide_directory_is_shared_and_blob_lookups_do_not_clone_the_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let api = Memory::new();
+    let c = Cancellation::default();
+    let entries: BTreeMap<String, Entry> = (0..10000)
+        .map(|n| {
+            let name = format!("Module{n}.xml");
+            (
+                name.clone(),
+                Entry {
+                    name,
+                    oid: "a".repeat(40),
+                    size: 1,
+                    kind: EntryKind::Blob,
+                    mode: "100644".into(),
+                },
+            )
+        })
+        .collect();
+    let entries = Arc::new(entries);
+    let files = Files {
+        client: api.clone(),
+        connection: connection(root.path()),
+        revision: "a".repeat(40),
+        root: root.path().join("config"),
+        blobs: root.path().join("blobs"),
+        trees: Mutex::new(BTreeMap::from([("CommonModules".into(), entries.clone())])),
+    };
+    assert!(Arc::ptr_eq(
+        &entries,
+        &files.directory("CommonModules", &c).unwrap()
+    ));
+    for n in 0..10000 {
+        assert!(
+            files
+                .blob(&format!("CommonModules/Module{n}.xml"), &c)
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert_eq!(api.trees.load(Ordering::Relaxed), 0);
+}

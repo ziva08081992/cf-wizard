@@ -18,6 +18,7 @@ class ExportCatalog:
     configuration: str
     objects: tuple[str, ...]
     git: object | None = field(default=None, compare=False, repr=False)
+    descriptors: tuple[tuple[str, str], ...] = field(default=(), compare=False, repr=False)
 
     @property
     def identity(self) -> str:

@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile
 
 from stage import _no_links
 from .git_api import Blob, Tree, GitError, _key, relative_path
+from .git_index_inputs import GitIndexEntry, GitIndexInputs
 
 @dataclass(frozen=True)
 class Entry:
@@ -47,6 +48,7 @@ class GitFiles:
         self.blobs = cache.absolute() / repo_key / "blobs"
         self.seed_root, self.seed_index = seed_root, seed_index
         self._directories = {"": self._checked_tree(tree)}
+        self._index_inputs = None
 
     @staticmethod
     def _checked_tree(tree):
@@ -63,6 +65,38 @@ class GitFiles:
 
     def relative(self, path):
         return Path(str(path).removeprefix("\\\\?\\")).relative_to(self.root).as_posix()
+
+    def prepare_index_inputs(self, descriptors):
+        """Resolve the complete input inventory in the opening worker, never in Qt."""
+        owners = {relative: owner for owner, relative in descriptors.items()}
+        paths = set(owners) | {"Configuration.xml"}
+        paths.update(f"Documents/{name}" for name, entry in self._entries("Documents").items()
+                     if isinstance(entry, Blob) and name.endswith(".xml"))
+        entries = []
+        for relative in sorted(paths):
+            blob = self.blob(relative)
+            if blob is None:
+                raise GitError(f"В Git-выгрузке отсутствует XML-описание. {relative}.")
+            roles = []
+            if relative == "Configuration.xml":
+                roles.append("configuration")
+            if relative in owners:
+                roles.append("descriptor")
+            if relative.startswith("Documents/") and relative.count("/") == 1:
+                roles.append("registrar")
+            entries.append(GitIndexEntry(relative, blob.oid, blob.size, owners.get(relative, ""), tuple(roles)))
+        inputs = GitIndexInputs(self.preference_key, self.revision, tuple(entries))
+        self.verify("Configuration.xml", (self.root / "Configuration.xml").read_bytes())
+        if self._index_inputs is not None and self._index_inputs != inputs:
+            raise GitError("Состав закреплённой ревизии Git изменился.")
+        self._index_inputs = inputs
+        return inputs
+
+    @property
+    def index_inputs(self):
+        if self._index_inputs is None:
+            raise GitError("Входы индекса Git ещё не проверены. Откройте ветку заново.")
+        return self._index_inputs
 
     def _entries(self, relative):
         if relative not in self._directories:
@@ -143,10 +177,13 @@ class GitFiles:
             data = self.client.file(self.revision, f"{self.directory}/{rel}", blob)
         return self._put(rel, data)
 
-    def metadata(self, descriptors):
-        paths = set(descriptors.values())
-        paths.update(f"Documents/{name}" for name, entry in self._entries("Documents").items()
-                     if isinstance(entry, Blob) and name.endswith(".xml"))
+    def metadata(self, descriptors, *, paths=None):
+        if paths is None:
+            paths = set(descriptors.values())
+            paths.update(f"Documents/{name}" for name, entry in self._entries("Documents").items()
+                         if isinstance(entry, Blob) and name.endswith(".xml"))
+        else:
+            paths = set(paths)
         missing = {rel for rel in paths if self.blob(rel) is None}
         if missing:
             raise GitError("В Git-выгрузке отсутствуют XML-описания. " + ", ".join(sorted(missing)[:5]))
@@ -185,4 +222,6 @@ class ExportSourceFactory:
         revision = client.branch_sha(branch)
         tree = client.config_tree(revision, directory)
         files = GitFiles(client, directory, branch, revision, tree, self.cache, seed_root, seed_index)
-        return self.open_export(str(files.ensure("Configuration.xml"))).with_git(files)
+        catalog = self.open_export(str(files.ensure("Configuration.xml")))
+        files.prepare_index_inputs(dict(catalog.descriptors))
+        return catalog.with_git(files)

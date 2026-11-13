@@ -1,0 +1,29 @@
+{
+  "manifest_sha256": "32d6fde32d8a43e53ac3ef11707bcabc81129683bace0bdd24c81aec019c5078",
+  "checks": [
+    {
+      "mode": "onefile",
+      "compiled_modules": 17,
+      "ui_files": 5,
+      "pinned_helper": true,
+      "debug_pak_absent": true,
+      "webengine_process": true,
+      "x64": true,
+      "exe_bytes": 197143753,
+      "payload_bytes": 489619515,
+      "sha256": "38eb22c8a4a99ec63837d183b66993b254fb7d6c4c13d19d8c546e81314c67aa"
+    },
+    {
+      "mode": "portable",
+      "compiled_modules": 17,
+      "ui_files": 5,
+      "pinned_helper": true,
+      "debug_pak_absent": true,
+      "webengine_process": true,
+      "x64": true,
+      "exe_bytes": 2455302,
+      "payload_bytes": 489931520,
+      "sha256": "85c4bba00a13e23802bd37f04342565ff38481edbcc9fcd7f77d7e96b7bccb53"
+    }
+  ]
+}

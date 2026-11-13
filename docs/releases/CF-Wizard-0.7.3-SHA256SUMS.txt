@@ -1,0 +1,3 @@
+38eb22c8a4a99ec63837d183b66993b254fb7d6c4c13d19d8c546e81314c67aa  CF-Wizard-0.7.3-windows-x64.exe
+a0e98848f9bd46bb2eabdf79e79aca179dad4526bdb90bf904b26e649d1fe350  CF-Wizard-0.7.3-windows-x64-portable.zip
+4fde904a88ff08adc79144fdb43cf2c36b36a7175af1598e7de2bf4689c8bbb0  CF-Wizard-0.7.3-User-Guide-RU.docx

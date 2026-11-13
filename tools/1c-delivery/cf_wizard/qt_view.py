@@ -4,6 +4,7 @@ from collections.abc import Callable
 import os
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices
@@ -20,7 +21,7 @@ from .git_api import DEFAULT_GITEA, GitError, connection_server, create_client, 
 from .git_source import ExportSourceFactory
 from .git_credentials import WindowsTokenStore
 from .helper_worker import HELPER_SHA256
-from .journals import ErrorJournal
+from .journals import ErrorJournal, create_journal, journal_directory, write_journal
 from .paths import BUILD_MODES, PATH_FIELDS, PathPreferences, dialog_location, normalize_path
 from .presentation import TYPE_LABELS, group_label, object_groups, object_label
 from .qt_git_dialog import GitConnectionDialog
@@ -119,6 +120,9 @@ class WizardBridge(QObject):
         self.values["index_directory"] = self.shared_index_directory
         self.opened_identity = None
         self.index_file = None
+        self.index_found = False
+        self.index_check_task = None
+        self.index_check_revision = 0
         self.index_info = "Откройте XML-выгрузку, чтобы создать индекс."
         self.last_dirs = paths.last_dirs.copy()
         self.default_logs = default_logs
@@ -185,7 +189,7 @@ class WizardBridge(QObject):
             "canOpenPackage": self.package is not None and not busy,
             "canOpenJournal": self.last_log is not None and not busy,
             "canRefreshIndex": self.catalog is not None and self.wizard.indexes is not None and not busy,
-            "indexExists": self.index_file is not None,
+            "indexExists": self.index_found,
             "indexInfo": self.index_info,
         }
 
@@ -265,19 +269,62 @@ class WizardBridge(QObject):
         self.status_kind = "idle"
         self._sync_index()
 
-    def _sync_index(self):
+    def _sync_index(self, *, preserve_log=False):
+        self.index_check_revision += 1
+        generation = self.index_check_revision
         self.index_file = None
+        self.index_found = False
         self.index_info = "Откройте XML-выгрузку, чтобы создать индекс."
         if self.catalog is None:
             return
         try:
             path = self.wizard.index_path(self.catalog, self.values["index_directory"])
+            self.index_found = bool(path and path.is_file())
             if self.catalog.git is not None:
-                checked = IndexReader.open(path, self.catalog.identity, HELPER_SHA256) if path and path.is_file() else None
-                if checked is None:
-                    self.index_info = "Подготовьте отдельный индекс этой ревизии Git."
-                    return
-                checked.close()
+                catalog, logs = self.catalog, self.values["logs"]
+                self.index_info = "Проверяю сохранённый индекс…"
+
+                def check():
+                    started = perf_counter()
+                    git = catalog.git
+                    log = create_journal(journal_directory(logs or self.default_logs, catalog.root))
+                    write_journal(log, f"Проверка индекса: {getattr(git.client, 'provider', 'gitea')}, источник {git.preference_key}, ветка {git.branch}, "
+                                      f"SHA {git.revision}, входов {len(git.index_inputs.entries)}.")
+                    try:
+                        checked = IndexReader.open(path, catalog.identity, HELPER_SHA256,
+                                                   inputs=git.index_inputs, strict=True) if path and path.is_file() else None
+                    except Exception as exc:
+                        write_journal(log, f"Ошибка проверки за {perf_counter() - started:.3f} с. {exc}")
+                        raise JournaledError(str(exc), log) from exc
+                    ready = checked is not None
+                    if checked is not None:
+                        checked.close()
+                    message = "Индекс готов · использован сохранённый индекс" if ready else "Нужно обновить индекс по кнопке"
+                    write_journal(log, f"{message}. Время {perf_counter() - started:.3f} с. "
+                                      "XML не индексировались, факты не извлекались.")
+                    return ready, log, message
+
+                task = Task(check)
+                self.index_check_task = task
+
+                def completed(result, error):
+                    if self.catalog is not catalog or generation != self.index_check_revision:
+                        return
+                    self.index_check_task = None
+                    if error is not None:
+                        self.index_info = f"Ошибка проверки индекса: {error}"
+                        self.diagnostics.error("Проверка индекса", error)
+                        self.last_log = getattr(error, "log", None)
+                    else:
+                        ready, log, self.index_info = result
+                        if not preserve_log:
+                            self.last_log = log
+                        self.index_file = path if ready else None
+                    self._emit()
+
+                task.signals.finished.connect(completed, Qt.ConnectionType.QueuedConnection)
+                QThreadPool.globalInstance().start(task)
+                return
             if path and path.is_file():
                 self.index_file = path
                 self.index_info = f"{path.name} · записи сверяются с XML при использовании"
@@ -710,7 +757,7 @@ class WizardBridge(QObject):
             self.last_dirs["index_directory"] = str(update.path.parent)
             self.index_directories[update.source.preference_key] = str(update.path.parent)
             self.values["index_directory"] = str(update.path.parent)
-            self._sync_index()
+            self._sync_index(preserve_log=True)
             self.status = (f"Индекс готов · добавлено {update.added} · изменено {update.changed} · "
                            f"удалено {update.removed} · переиспользовано {update.unchanged}")
 

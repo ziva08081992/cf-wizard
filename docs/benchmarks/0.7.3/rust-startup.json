@@ -1,0 +1,32 @@
+[
+  {
+    "mode": "rust-webview2",
+    "run": 1,
+    "window_loaded_seconds": 2.378,
+    "returncode": 0,
+    "exe_bytes": 909312,
+    "report": {
+      "background": "rgb(30, 31, 34)",
+      "buttons": 39,
+      "ready_state": "complete",
+      "text_length": 431,
+      "title": "Мастер технической CF",
+      "webview_loaded": true
+    }
+  },
+  {
+    "mode": "rust-webview2",
+    "run": 2,
+    "window_loaded_seconds": 0.49,
+    "returncode": 0,
+    "exe_bytes": 909312,
+    "report": {
+      "background": "rgb(30, 31, 34)",
+      "buttons": 39,
+      "ready_state": "complete",
+      "text_length": 431,
+      "title": "Мастер технической CF",
+      "webview_loaded": true
+    }
+  }
+]

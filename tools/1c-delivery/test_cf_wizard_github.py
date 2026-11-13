@@ -378,11 +378,12 @@ class GitHubIndexIntegration(unittest.TestCase):
         found=wizard.find_git_task(next_source,GitTaskQuery.create('ERP-123',True),Event(),lambda _:None)
         self.assertEqual(found.objects,frozenset({DOCUMENT})); self.assertEqual(found.commits,1)
         saved=new.path.read_bytes()
+        failed = dict(changed)
+        failed['config/Documents/Заказ.xml'] += b'\n<!-- cannot download new revision -->'
+        http.add_revision('d' * 40, failed, [OLD])
+        failed_source = factory.git(client, 'main', 'config')
         with patch.object(client,'files',side_effect=GitError('synthetic failure')):
-            # Force an XML cache miss without modifying the tested index.
-            path=next_source.root/'Documents/Заказ.xml'; path.unlink()
-            (next_source.git.blobs/blob(changed['config/Documents/Заказ.xml']).oid).unlink()
-            with self.assertRaises(ValueError): wizard.refresh_index(next_source,'')
+            with self.assertRaises(ValueError): wizard.refresh_index(failed_source,'')
         self.assertEqual(new.path.read_bytes(),saved)
 
 
