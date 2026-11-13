@@ -16,6 +16,10 @@ struct Memory {
     trees: AtomicUsize,
     revision: AtomicUsize,
     cancel_after: AtomicUsize,
+    history: Mutex<Vec<Commit>>,
+    history_calls: AtomicUsize,
+    changed_requests: Mutex<Vec<String>>,
+    history_ranges: Mutex<Vec<(String, Option<String>, String)>>,
 }
 impl Memory {
     fn new() -> Arc<Self> {
@@ -69,6 +73,10 @@ impl Memory {
             trees: AtomicUsize::new(0),
             revision: AtomicUsize::new(1),
             cancel_after: AtomicUsize::new(usize::MAX),
+            history: Mutex::new(vec![]),
+            history_calls: AtomicUsize::new(0),
+            changed_requests: Mutex::new(vec![]),
+            history_ranges: Mutex::new(vec![]),
         })
     }
 }
@@ -100,16 +108,28 @@ impl GitProvider for Memory {
     }
     fn commits(
         &self,
-        _: &str,
-        _: Option<&str>,
-        _: &str,
-        _: &Cancellation,
-        _: &dyn Fn(usize),
+        revision: &str,
+        since: Option<&str>,
+        until: &str,
+        cancel: &Cancellation,
+        progress: &dyn Fn(usize),
     ) -> Result<Vec<Commit>> {
-        Ok(vec![])
+        cancel.check()?;
+        self.history_calls.fetch_add(1, Ordering::Relaxed);
+        self.history_ranges.lock().unwrap().push((
+            revision.into(),
+            since.map(str::to_owned),
+            until.into(),
+        ));
+        let rows = self.history.lock().unwrap().clone();
+        progress(rows.len());
+        cancel.check()?;
+        Ok(rows)
     }
-    fn changed(&self, _: &str, _: &str, _: &Cancellation) -> Result<Vec<String>> {
-        Ok(vec![])
+    fn changed(&self, revision: &str, _: &str, cancel: &Cancellation) -> Result<Vec<String>> {
+        cancel.check()?;
+        self.changed_requests.lock().unwrap().push(revision.into());
+        Ok(vec!["config/CommonModules/А/Ext/Module.bsl".into()])
     }
 }
 fn connection(root: &Path) -> Connection {
@@ -119,6 +139,137 @@ fn connection(root: &Path) -> Connection {
         branch: "main".into(),
         cache: root.to_string_lossy().into(),
         ..Connection::default()
+    }
+}
+#[test]
+fn commit_search_uses_exact_keys_and_literal_fragments_for_both_providers() {
+    let messages = [
+        "ERP-123 исправление",
+        "erp-123\nмногострочный комментарий",
+        "ERP-1234",
+        "XERP-123",
+        "ERP-123_test",
+        "Исправление обмена",
+        "Дата 13.11.2026",
+        "Буквальный .*[?( и \"текст\"",
+        "Два  пробела",
+        "TASK_X9-42: выпуск",
+        "ЖERP-123",
+        "ERP-123Я",
+        "(ERP-123)",
+    ];
+    for provider in ["gitea", "github"] {
+        let root = tempfile::tempdir().unwrap();
+        let api = Memory::new();
+        *api.history.lock().unwrap() = messages
+            .iter()
+            .enumerate()
+            .map(|(i, message)| Commit {
+                oid: format!("{:040x}", i + 10),
+                message: (*message).into(),
+                date: "2026-11-01T00:00:00Z".into(),
+            })
+            .collect();
+        let mut conn = connection(root.path());
+        conn.provider = provider.into();
+        if provider == "github" {
+            conn.server = "https://github.com".into();
+        }
+        let cancel = Cancellation::default();
+        let source = GitSource::open(&conn, api.clone(), &cancel).unwrap();
+        let cases: &[(&str, &[usize])] = &[
+            (" ERP-123 ", &[0, 1, 12]),
+            ("правление ОБМЕНА", &[5]),
+            ("13.11.2026", &[6]),
+            (".*[?(", &[7]),
+            ("\"ТЕКСТ\"", &[7]),
+            ("два  пробела", &[8]),
+            ("task_x9-42", &[9]),
+            ("нет совпадений", &[]),
+        ];
+        for &(query, matching) in cases {
+            api.changed_requests.lock().unwrap().clear();
+            let result = source.search(query, Some(90), &cancel, &|_| {}).unwrap();
+            let expected = matching
+                .iter()
+                .map(|i| format!("{:040x}", i + 10))
+                .collect::<Vec<_>>();
+            assert_eq!(result.commits, expected, "{provider}: {query}");
+            assert_eq!(*api.changed_requests.lock().unwrap(), expected);
+            assert_eq!(result.revision, source.revision());
+            assert_eq!(result.scanned, messages.len());
+            assert_eq!(result.files, usize::from(!matching.is_empty()));
+            if matching.is_empty() {
+                assert!(result.objects.is_empty());
+            } else {
+                assert_eq!(result.objects, ["CommonModule.А"]);
+            }
+        }
+        assert!(
+            api.history_ranges
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(revision, since, until)| revision == source.revision()
+                    && since.is_some()
+                    && !until.is_empty())
+        );
+        source.search("ERP-123", None, &cancel, &|_| {}).unwrap();
+        assert!(
+            api.history_ranges
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .is_none()
+        );
+        api.changed_requests.lock().unwrap().clear();
+        assert!(
+            source
+                .search("ERP-123", None, &cancel, &|_| cancel.cancel())
+                .is_err()
+        );
+        assert!(api.changed_requests.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn commit_search_rejects_invalid_raw_input_before_requesting_history() {
+    let root = tempfile::tempdir().unwrap();
+    let api = Memory::new();
+    let cancel = Cancellation::default();
+    let source = GitSource::open(&connection(root.path()), api.clone(), &cancel).unwrap();
+    let invalid = [
+        "".into(),
+        "   ".into(),
+        "\nERP-123".into(),
+        "ERP-123\t".into(),
+        "text\r\nother".into(),
+        "text\0other".into(),
+        "\u{007f}text".into(),
+        "text\u{009f}".into(),
+        "a".repeat(257),
+        "Я".repeat(129),
+        "😀".repeat(65),
+    ];
+    for query in invalid {
+        assert!(matches!(
+            source.search(&query, Some(90), &cancel, &|_| {}),
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(api.history_calls.load(Ordering::Relaxed), 0);
+    assert!(api.changed_requests.lock().unwrap().is_empty());
+    for query in ["a".repeat(256), "Я".repeat(128), "😀".repeat(64)] {
+        let padded = format!("  {query}  ");
+        api.history.lock().unwrap().push(Commit {
+            oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            message: format!("prefix {query} suffix"),
+            date: "2026-11-01T00:00:00Z".into(),
+        });
+        let result = source.search(&padded, Some(90), &cancel, &|_| {}).unwrap();
+        assert_eq!(result.commits.len(), 1);
     }
 }
 #[test]

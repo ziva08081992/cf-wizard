@@ -1,9 +1,20 @@
 /.agents/
 /.venv/
 __pycache__/
+# Generated Rust/frontend files and local caches
+**/target/
+**/cargo-home/
+**/node_modules/
+**/git-cache/
+**/webview-rust/
+# Build output, local databases and journals
 *.exe
+*.pdb
+*.ilk
 *.sqlite3
 *.log
+*.jsonl
+*.jsonl.gz
 /build/
 /dist/
 *.cf
@@ -11,3 +22,12 @@ __pycache__/
 *.1CD
 *.sqlite3-*
 .env
+.env.*
+!.env.example
+# Local connection settings and private key containers
+**/paths.json
+*.key
+*.pfx
+*.p12
+# Historical source ZIPs: sources are versioned as regular files
+/CF-Wizard-*-sources.zip

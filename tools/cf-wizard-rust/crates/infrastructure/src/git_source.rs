@@ -247,10 +247,8 @@ impl GitSource {
         cancel: &Cancellation,
         progress: &dyn Fn(usize),
     ) -> Result<TaskResult> {
-        let task = task.trim();
-        if task.is_empty() || task.len() > 256 || task.chars().any(char::is_control) {
-            return Err(Error::Invalid("Укажите номер задачи Git".into()));
-        }
+        let task = normalize_commit_query(task)?;
+        let matcher = commit_matcher(task)?;
         if days == Some(0) {
             return Err(Error::Invalid(
                 "Количество дней должно быть положительным целым числом".into(),
@@ -274,11 +272,6 @@ impl GitSource {
             cancel,
             progress,
         )?;
-        let matcher = regex::Regex::new(&format!(
-            r"(?i)(?:^|[^\pL\pN_]){}(?:$|[^\pL\pN_])",
-            regex::escape(task)
-        ))
-        .map_err(crate::external)?;
         let mut selected = BTreeSet::new();
         let mut missing = BTreeSet::new();
         let mut paths = BTreeSet::<String>::new();
@@ -331,6 +324,46 @@ impl GitSource {
             revision: self.revision().into(),
         })
     }
+}
+/// Validate raw input before trimming so edge controls cannot disappear.
+pub fn normalize_commit_query(query: &str) -> Result<&str> {
+    if query.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "Комментарий для поиска не должен содержать управляющие символы".into(),
+        ));
+    }
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(Error::Invalid(
+            "Укажите ключ задачи или фрагмент комментария коммита Git".into(),
+        ));
+    }
+    if query.len() > 256 {
+        return Err(Error::Invalid(
+            "Слишком длинный поисковый текст: максимум 256 байт UTF-8".into(),
+        ));
+    }
+    Ok(query)
+}
+fn commit_matcher(query: &str) -> Result<regex::Regex> {
+    let is_key = query.rsplit_once('-').is_some_and(|(prefix, number)| {
+        prefix
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic())
+            && prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+    });
+    let literal = regex::escape(query);
+    let pattern = if is_key {
+        format!(r"(?i)(?:^|[^\pL\pN_]){literal}(?:$|[^\pL\pN_])")
+    } else {
+        format!("(?i){literal}")
+    };
+    regex::Regex::new(&pattern).map_err(crate::external)
 }
 #[derive(Clone, Serialize)]
 pub struct TaskResult {
