@@ -1,7 +1,8 @@
 """Build the Russian DOCX guide from docs/user-guide.md. Requires python-docx."""
 from pathlib import Path
+import argparse
 import re
-import sys
+from urllib.parse import quote, urlsplit
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -12,7 +13,15 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT=Path(__file__).resolve().parents[2]
 SOURCE=ROOT/'docs/user-guide.md'
-OUTPUT=ROOT/'docs/CF-Wizard-0.7.3-User-Guide-RU.docx'
+VERSION='0.8.0-rust.2'
+OUTPUT=ROOT/f'docs/CF-Wizard-{VERSION}-User-Guide-RU-Illustrated.docx'
+
+def link_target(target):
+    if urlsplit(target).scheme or target.startswith('#'):
+        return target
+    relative=(SOURCE.parent/target.split('?')[0]).resolve().relative_to(ROOT).as_posix()
+    query='?'+target.split('?',1)[1] if '?' in target else ''
+    return 'https://github.com/ziva08081992/cf-wizard/blob/main/'+quote(relative)+query
 
 def rich(paragraph,text):
     token=re.compile(r'(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*)')
@@ -20,7 +29,7 @@ def rich(paragraph,text):
     for match in token.finditer(text):
         paragraph.add_run(text[start:match.start()])
         if match.group(2):
-            link=OxmlElement('w:hyperlink');link.set(qn('r:id'),paragraph.part.relate_to(match.group(3),RT.HYPERLINK,is_external=True))
+            link=OxmlElement('w:hyperlink');link.set(qn('r:id'),paragraph.part.relate_to(link_target(match.group(3)),RT.HYPERLINK,is_external=True))
             run=OxmlElement('w:r');pr=OxmlElement('w:rPr');color=OxmlElement('w:color');color.set(qn('w:val'),'18588A');pr.append(color);run.append(pr)
             t=OxmlElement('w:t');t.text=match.group(2);run.append(t);link.append(run);paragraph._p.append(link)
         else:
@@ -74,12 +83,14 @@ def build():
         doc.styles[name].font.size=Pt(size);doc.styles[name].font.bold=True;doc.styles[name].paragraph_format.space_before=Pt(13);doc.styles[name].paragraph_format.keep_with_next=True
     doc.styles['Caption'].font.size=Pt(9.5);doc.styles['Caption'].font.color.rgb=RGBColor.from_string('4A4A4A')
     footer=section.footer.paragraphs[0];footer.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=footer.add_run('CF Wizard 0.7.3   |   ');r.font.size=Pt(9)
+    r=footer.add_run(f'CF Wizard {VERSION}   |   ');r.font.size=Pt(9)
     field=OxmlElement('w:fldSimple');field.set(qn('w:instr'),'PAGE');footer._p.append(field)
     lines=SOURCE.read_text(encoding='utf-8-sig').splitlines();i=0;num=None
     while i<len(lines):
         line=lines[i].strip()
         if not line:i+=1;num=None;continue
+        if line=='<!-- pagebreak -->':
+            doc.add_page_break();i+=1;num=None;continue
         if line.startswith('|'):
             group=[]
             while i<len(lines) and lines[i].strip().startswith('|'):group.append(lines[i]);i+=1
@@ -87,7 +98,7 @@ def build():
         img=re.fullmatch(r'!\[([^\]]+)\]\(([^)]+)\)',line)
         if img:
             p=doc.add_paragraph();p.alignment=WD_ALIGN_PARAGRAPH.CENTER;p.paragraph_format.keep_with_next=True
-            shape=p.add_run().add_picture(str(SOURCE.parent/img.group(2)),width=Inches(4.6 if 'git-connection' in img.group(2) else 6.8));shape._inline.docPr.set('descr',img.group(1))
+            shape=p.add_run().add_picture(str(SOURCE.parent/img.group(2)),width=Inches(6.8));shape._inline.docPr.set('descr',img.group(1))
             cap=doc.add_paragraph(img.group(1),style='Caption');cap.alignment=WD_ALIGN_PARAGRAPH.CENTER
         elif line.startswith('# '):doc.add_paragraph(line[2:],style='Title')
         elif line.startswith('## '):doc.add_paragraph(line[3:],style='Heading 1')
@@ -99,7 +110,16 @@ def build():
         elif line.startswith('- '):rich(doc.add_paragraph(style='List Bullet'),line[2:])
         else:rich(doc.add_paragraph(),line)
         i+=1
-    doc.core_properties.title='CF Wizard Руководство пользователя';doc.core_properties.subject='Использование версии 0.7.3';doc.core_properties.author='CF Wizard';doc.core_properties.last_modified_by='CF Wizard';doc.core_properties.keywords='1С CF Git Gitea GitHub инструкция'
+    doc.core_properties.title='CF Wizard Руководство пользователя';doc.core_properties.subject=f'Использование версии {VERSION}';doc.core_properties.author='CF Wizard';doc.core_properties.last_modified_by='CF Wizard';doc.core_properties.keywords='1С CF Git Gitea GitHub инструкция'
+    doc.core_properties.language='ru-RU'
+    OUTPUT.parent.mkdir(parents=True,exist_ok=True)
     doc.save(OUTPUT)
     print(OUTPUT);print('Paragraphs:',len(doc.paragraphs),'Tables:',len(doc.tables),'Images:',len(doc.inline_shapes))
-if __name__=='__main__':build()
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source',type=Path,default=SOURCE)
+    parser.add_argument('--output',type=Path,default=OUTPUT)
+    parser.add_argument('--version',default=VERSION)
+    options=parser.parse_args()
+    SOURCE=options.source.resolve();OUTPUT=options.output.resolve();VERSION=options.version
+    build()

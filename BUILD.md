@@ -1,55 +1,40 @@
-# CF Wizard 0.7.3
+# Сборка CF Wizard
 
-Мастер собирает техническую CF из XML-выгрузки основной конфигурации 1С. В Windows он открывает локальную выгрузку или файлы выбранной ветки Gitea, показывает зависимости и готовит `.cf` с настройками объединения.
+Текущая версия **0.8.0-rust.2** находится в `tools/cf-wizard-rust`. Для запуска готового EXE Rust, Python и Qt не требуются; разработчику для сборки нужны Rust MSVC x64 и Microsoft C++ Build Tools. Проверенный toolchain — Rust 1.99.1. Для окна приложения нужен Microsoft Edge WebView2 Runtime, для сборки CF — установленная платформа 1С x64.
 
-Клонируйте репозиторий и выполните команды из его корня. Для запуска потребуется Python 3.12 x64. Для сборки CF мастер использует установленную платформу 1С.
+## Rust workspace
 
-## Подготовка и запуск
-
-Мастер использует закреплённую версию `partial_cf.py` из репозитория alonehobo. Скачайте её с указанного коммита и проверьте SHA-256. [Исходный репозиторий](https://github.com/alonehobo/1c-partial-cf/tree/8cc8aff3705dd91100555851d398ae91a192e23d)
+Из корня репозитория перейдите в workspace:
 
 ```powershell
-py -3.12 -m venv .venv
-$python = '.\.venv\Scripts\python.exe'
-& $python -m pip install PySide6-Essentials==6.10.2 PySide6-Addons==6.10.2 PyInstaller==6.18.0
-
-$helper = '.\.agents\skills\1c-partial-cf\scripts\partial_cf.py'
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $helper) | Out-Null
-Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/alonehobo/1c-partial-cf/8cc8aff3705dd91100555851d398ae91a192e23d/1c-partial-cf/scripts/partial_cf.py' -OutFile $helper
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant() -ne 'efe67eda5f95475757efefd75c979d8144ffd7480934307db487155c87ea5699') {
-    throw 'Контрольная сумма partial_cf.py отличается от закреплённой.'
-}
-& $python -B '.\tools\1c-delivery\cf_wizard_qt.py' --helper $helper
+Set-Location tools/cf-wizard-rust
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --release --locked
 ```
 
-## Сборка переносимого EXE
+Результат: `target/release/cf-wizard-rust.exe` внутри workspace, либо каталог из `CARGO_TARGET_DIR`. Для распространения переименуйте копию в `CF-Wizard-Rust-0.8.0-rust.2.exe`. HTML/CSS/JavaScript встроены в EXE. `Cargo.lock` закрепляет зависимости; `.cargo/config.toml` включает статический C runtime для Windows MSVC x64.
 
-После подготовки окружения и скрипта выполните из той же папки.
+Обычная сборка и тесты не запускают Python. Сохранённые эталоны для сопоставления с Python 0.7.3 включены в `tests/fixtures`; Python-генераторы нужны только для их повторного получения.
 
-```powershell
-& $python -B '.\tools\1c-delivery\build_cf_wizard_exe.py' '.\CF-Wizard-0.7.3-windows-x64.exe'
-```
+Состав слоёв и детали запуска: [README Rust-версии](tools/cf-wizard-rust/README.md). Границы проверок rust.2: [описание выпуска](docs/releases/v0.8.0-rust.2.md). Успешные unit-тесты и обратная выгрузка не подтверждают совместимость объединения с целевой информационной базой.
 
-Окно **Настройки** содержит пути, параметры сборки и подключение к Gitea. Для Gitea укажите свой HTTPS-адрес, репозиторий, каталог выгрузки, ветку и персональный токен на чтение. Справка доступна в мастере.
+## Обновление инструкции Word
 
-Перед распространением EXE уточните условия использования встроенных компонентов. [Репозиторий скрипта](https://github.com/alonehobo/1c-partial-cf) · [Лицензии Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html)
-
-## Тесты
-
-После подготовки Python и закреплённого скрипта запустите тесты из корня репозитория.
-
-```powershell
-& $python -B -m unittest discover -s tools/1c-delivery -p 'test_*.py'
-```
-
-## Инструкция Word
-
-Канонический пользовательский текст находится в `docs/user-guide.md`, скриншоты — в `docs/images`. Для обновления Word в отдельном окружении установите `python-docx`, затем выполните:
+Источник текста — `docs/user-guide.md`. Актуальные реальные скриншоты — `docs/images/rust-0.8.0-rust.2`. Для подготовки Word нужен отдельный Python с `python-docx`:
 
 ```powershell
 python tools/docs/build_user_guide.py
 ```
 
-Генератор создаёт `docs/CF-Wizard-0.7.3-User-Guide-RU.docx`. После изменения проверьте все страницы в Word либо рендеринге; не публикуйте непроверенную вёрстку.
+Результат — `docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx`. Параметры `--source`, `--output` и `--version` позволяют собрать другую редакцию без изменения генератора. Комментарий `<!-- pagebreak -->` в Markdown задаёт начало страницы в Word.
 
-Для портативной папки используйте тот же сборщик с `--onedir` и укажите путь новой папки вместо EXE. Папка `_internal` должна оставаться рядом с `CF-Wizard.exe`.
+Перед публикацией откройте Word, обновите поля и проверьте каждую страницу, таблицу и подпись. Допустим рендеринг через Word либо LibreOffice с просмотром всех страниц. Внешние ссылки в Word преобразуются в адреса GitHub, поэтому документ можно читать отдельно от репозитория.
+
+Иллюстрированный Word имеет отдельное имя: он не подменяет текстовую инструкцию и `SHA256SUMS.txt`, опубликованные в Assets тега `v0.8`.
+
+## Прежняя Python-версия
+
+Код `tools/1c-delivery` и старые архивы сохранены для истории и сравнительных проверок. Они не входят в исполняемый Rust EXE. Инструкции по старой сборке доступны в [BUILD.md версии 0.7.2](https://github.com/ziva08081992/cf-wizard/blob/v0.7.2/BUILD.md).
