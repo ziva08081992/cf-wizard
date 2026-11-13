@@ -17,11 +17,13 @@ VERSION='0.8.0-rust.2'
 OUTPUT=ROOT/f'docs/CF-Wizard-{VERSION}-User-Guide-RU-Illustrated.docx'
 
 def link_target(target):
-    if urlsplit(target).scheme or target.startswith('#'):
+    parts=urlsplit(target)
+    if parts.scheme or target.startswith('#'):
         return target
-    relative=(SOURCE.parent/target.split('?')[0]).resolve().relative_to(ROOT).as_posix()
-    query='?'+target.split('?',1)[1] if '?' in target else ''
-    return 'https://github.com/ziva08081992/cf-wizard/blob/main/'+quote(relative)+query
+    relative=(SOURCE.parent/parts.path).resolve().relative_to(ROOT).as_posix()
+    query='?'+parts.query if parts.query else ''
+    fragment='#'+quote(parts.fragment) if parts.fragment else ''
+    return 'https://github.com/ziva08081992/cf-wizard/blob/main/'+quote(relative)+query+fragment
 
 def rich(paragraph,text):
     token=re.compile(r'(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*)')

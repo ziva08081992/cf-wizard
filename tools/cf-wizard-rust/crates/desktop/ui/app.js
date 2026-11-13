@@ -324,6 +324,17 @@
     });
   }
 
+  function gitCommentQueryError(value) {
+    if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+      return "Поисковый текст не должен содержать управляющие символы.";
+    }
+    const query = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+    if (new TextEncoder().encode(query).length > 256) {
+      return "Слишком длинный поисковый текст: максимум 256 байт UTF-8.";
+    }
+    return query ? "" : "Укажите ключ задачи или фрагмент комментария.";
+  }
+
   function updateGitTaskButton() {
     const custom = gitTaskPeriod.value === "custom";
     const valid = !custom || (Number.isSafeInteger(gitTaskDays.valueAsNumber) && gitTaskDays.valueAsNumber > 0);
@@ -331,7 +342,12 @@
     gitTaskDays.disabled = !custom || !state?.gitTaskReady || state.busy;
     gitTaskDays.setAttribute("aria-invalid", String(!valid));
     one("#cf-git-task-days-error").hidden = valid;
-    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || !gitTaskKey.value.trim() || !valid;
+    const queryError = gitCommentQueryError(gitTaskKey.value);
+    const showQueryError = Boolean(gitTaskKey.value && queryError);
+    gitTaskKey.setAttribute("aria-invalid", String(showQueryError));
+    one("#cf-git-comment-error").textContent = queryError;
+    one("#cf-git-comment-error").hidden = !showQueryError;
+    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || Boolean(queryError) || !valid;
   }
 
   function renderGitTask(started) {
@@ -446,7 +462,7 @@
     indexStatus.title = state.indexInfo;
     indexStatus.classList.toggle("cf-index-needed", !state.indexReady);
     one("[data-index-label]").textContent = state.indexReady ? "Индекс готов"
-      : state.activeGit ? "Нужен индекс" : "Индекс ещё не создан";
+      : state.indexExists ? "Нужно обновить индекс" : "Индекс ещё не создан";
     one("[data-platform-version]").textContent = state.platformLabel;
     one("[data-status]").textContent = state.status;
     const dot = one(".cf-status-main .cf-status-dot");

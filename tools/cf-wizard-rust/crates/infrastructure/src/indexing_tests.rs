@@ -40,6 +40,56 @@ fn replace_text(row: &mut serde_json::Value, path: &str, old: &str, new: &str) {
     replace(row, path, text.replace(old, new).into_bytes());
 }
 #[test]
+fn configuration_version_only_change_updates_manifest_without_reading_object_xml() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let folder = temp.path().join("index");
+    let mut data = row("required-values");
+    replace_text(
+        &mut data,
+        "Configuration.xml",
+        "<Comment/>",
+        "<Comment/><Version>1.0.0</Version>",
+    );
+    let first = source(&data, &root, true);
+    let cold = update(&first, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    let bytes = fs::read(&cold.path).unwrap();
+
+    replace_text(
+        &mut data,
+        "Configuration.xml",
+        "<Version>1.0.0</Version>",
+        "<Version>1.0.1</Version>",
+    );
+    data["manifest"]["revision"] = serde_json::json!("c".repeat(40));
+    let changed = source(&data, &root, true);
+    let stale = status(&changed, &folder).unwrap();
+    assert!(stale.found);
+    assert!(!stale.ready);
+    assert!(stale.path.is_none());
+    assert_eq!(stale.preferred, cold.path);
+    assert_eq!(fs::read(&cold.path).unwrap(), bytes);
+    assert!(changed.reads.lock().unwrap().is_empty());
+
+    let delta = update(&changed, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    assert_eq!(delta.path, cold.path);
+    assert_eq!(delta.input_changed, 1);
+    assert_eq!(delta.xml_reads, 0);
+    assert_eq!((delta.added, delta.changed, delta.removed), (0, 0, 0));
+    assert_eq!(delta.unchanged, cold.added);
+    assert!(changed.reads.lock().unwrap().is_empty());
+
+    let bytes = fs::read(&cold.path).unwrap();
+    let modified = cold.path.metadata().unwrap().modified().unwrap();
+    let restarted = source(&data, &root, true);
+    assert!(status(&restarted, &folder).unwrap().ready);
+    let reused = update(&restarted, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    assert_eq!(reused.xml_reads, 0);
+    assert!(restarted.reads.lock().unwrap().is_empty());
+    assert_eq!(fs::read(&cold.path).unwrap(), bytes);
+    assert_eq!(cold.path.metadata().unwrap().modified().unwrap(), modified);
+}
+#[test]
 fn persistent_git_index_reuses_after_restart_and_only_reads_the_xml_delta() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("source");

@@ -848,12 +848,12 @@ impl Model {
                 let source=self.git.clone().ok_or_else(||Error::Invalid("Подключитесь к Git".into()))?;
                 if self.preferences.source_mode!="git"||source.connection().branch!=self.preferences.git_settings.branch{return Err(Error::Invalid("Откройте выбранную ветку Git".into()));}
                 let days=if args[1]==true{None}else{Some(field(args,2).parse::<u32>().ok().filter(|&n|n>0).ok_or_else(||Error::Invalid("Укажите положительное целое количество дней".into()))?)};
-                let key=field(args,0).trim().to_owned();if key.is_empty(){return Err(Error::Invalid("Укажите номер задачи".into()));}
+                let key=cf_infrastructure::git_source::normalize_commit_query(field(args,0))?.to_owned();
                 let proxy=self.proxy.clone();self.task_scope=key.clone();
-                self.start("Ищу коммиты по задаче…",id,Some("git-task"),move|c,log|{
+                self.start("Ищу коммиты по комментарию…",id,Some("git-task"),move|c,log|{
                     let result=source.search(&key,days,&c,&|count|{let _=proxy.send_event(Event::Progress("gitTaskProgress".into(),json!(count)));})?;
                     if let Some(log)=log{log.value("task-filter",json!({"query":key,"days":days,"objects":result.objects,"commits":result.commits,"unmapped":result.missing}))?;}
-                    Ok(Box::new(move|m|{m.task_filter=Some(result);m.task_revision+=1;m.task_scope.clear();m.status="Отбор по задаче готов. Отметьте нужные объекты или нажмите «Выделить все».".into();m.status_kind="ok".into();}))
+                    Ok(Box::new(move|m|{m.task_filter=Some(result);m.task_revision+=1;m.task_scope.clear();m.status="Отбор по комментарию готов. Проверьте объекты и нажмите «Отметить найденные».".into();m.status_kind="ok".into();}))
                 })?;return Ok(None);
             }
             "openLink"=>{let url=match field(args,0){"repository"=>"https://github.com/alonehobo/1c-partial-cf","licenses"=>"https://github.com/tauri-apps/wry","icons"=>"https://lucide.dev/license",_=>return Err(Error::Invalid("Неизвестная ссылка".into()))};shell_open(Path::new(url))?;}
