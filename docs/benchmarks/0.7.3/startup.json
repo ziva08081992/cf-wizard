@@ -1,0 +1,20 @@
+{
+  "method": "Windows process start to local HTML ready report; OS cache was not cleared; two successful runs per variant, isolated profile for each run; Rust prototype contains UI only",
+  "measurements": [
+    {
+      "mode": "Qt portable",
+      "first_success_seconds": 4.065,
+      "repeat_seconds": 0.567
+    },
+    {
+      "mode": "Qt onefile",
+      "first_success_seconds": 9.834,
+      "repeat_seconds": 5.51
+    },
+    {
+      "mode": "Rust Wry WebView2 prototype",
+      "first_success_seconds": 2.378,
+      "repeat_seconds": 0.49
+    }
+  ]
+}

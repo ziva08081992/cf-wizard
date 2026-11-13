@@ -1,0 +1,3 @@
+/target/
+!tests/fixtures/legacy-v1-local.sqlite3
+!tests/fixtures/legacy-v1-git.sqlite3

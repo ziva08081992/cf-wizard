@@ -180,7 +180,7 @@ class WizardTests(unittest.TestCase):
         client = Client()
         git = factory.strategy("git")(client, "newmaster", "config")
         self.assertEqual(client.requested, ["config/Configuration.xml"])
-        self.assertEqual(client.listed, [""])
+        self.assertEqual(set(client.listed), {"", "Documents", "AccumulationRegisters", "Catalogs", "CommonModules"})
         self.assertNotEqual(wizard.index_path(git, ""), wizard.index_path(self.source, ""))
         with self.assertRaisesRegex(ValueError, "индекс выбранной ревизии"):
             wizard.preview(git, "", {register}, str(self.output))

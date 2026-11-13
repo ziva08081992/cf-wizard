@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>Мастер технической CF</title>
+<link rel="stylesheet" href="theme.css">
+<script defer src="bridge.js"></script>
+<script defer src="icons.js"></script>
+<script defer src="app.js"></script>
+</head>
+<body>
+<div id="cf-wizard-preview" aria-label="Мастер технической CF">
+  <section class="cf-window" aria-label="Мастер технической CF">
+    <header class="cf-window-bar">
+      <div class="cf-brand"><span class="cf-app-mark" aria-hidden="true">CF</span><span>Мастер технической CF</span></div>
+      <div class="cf-window-tools">
+        <button type="button" class="cf-button cf-quiet" data-action="help" title="Справка (F1)"><i data-lucide="book-open" aria-hidden="true"></i>Справка</button>
+        <button type="button" class="cf-button cf-quiet" data-action="about"><i data-lucide="info" aria-hidden="true"></i>О программе</button>
+      </div>
+    </header>
+
+    <section class="cf-source-toolbar" aria-label="Работа с выгрузкой">
+      <div class="cf-source-row">
+        <div class="cf-field">
+          <span class="cf-source-label" id="cf-source-label">Источник XML</span>
+          <div class="cf-source-options" role="group" aria-labelledby="cf-source-label">
+            <button type="button" class="cf-button" data-source-mode="local" aria-pressed="true" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Локальная папка</button>
+            <button type="button" class="cf-button" data-source-mode="git" aria-pressed="false" disabled><i data-lucide="workflow" aria-hidden="true"></i>Git</button>
+          </div>
+        </div>
+        <div class="cf-field cf-choice-picker cf-branch-picker" id="cf-git-source" hidden>
+          <label id="cf-git-branch-label" for="cf-git-branch">Ветка Git</label>
+          <button type="button" id="cf-git-branch" class="cf-choice-toggle" aria-controls="cf-git-branch-options"
+                  aria-haspopup="menu" aria-expanded="false" aria-labelledby="cf-git-branch-label cf-git-branch-value" disabled>
+            <span id="cf-git-branch-value"></span>
+          </button>
+          <div id="cf-git-branch-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-git-branch-label"></div>
+        </div>
+        <div class="cf-source-actions">
+          <button type="button" class="cf-button" data-action="open-source" disabled><i data-lucide="folder-open" aria-hidden="true"></i><span data-open-source>Открыть выгрузку</span></button>
+          <button type="button" class="cf-button" data-action="refresh-index" disabled title="Проверить изменения выгрузки и обновить индекс"><i data-lucide="database" aria-hidden="true"></i><span data-index-command>Создать индекс</span></button>
+          <button type="button" class="cf-button" data-action="logs" disabled title="Открыть папку всех журналов"><i data-lucide="folder-search" aria-hidden="true"></i>Папка журналов</button>
+        </div>
+        <button type="button" class="cf-button cf-settings-action" data-action="settings" aria-haspopup="dialog" aria-controls="cf-preferences" disabled><i data-lucide="settings-2" aria-hidden="true"></i>Настройки</button>
+      </div>
+      <div class="cf-source-summary" data-source-summary aria-live="polite" hidden>
+        <span class="cf-source-caption"><i data-lucide="database" aria-hidden="true"></i><strong data-config-name></strong><span data-active-source></span></span>
+        <span class="cf-index-indicator" data-index-status><span class="cf-status-dot" aria-hidden="true"></span><span data-index-label></span></span>
+        <span data-git-poll hidden></span>
+      </div>
+    </section>
+
+    <div class="cf-workspace">
+      <section class="cf-pane cf-objects" aria-labelledby="cf-objects-title">
+        <div class="cf-panel-heading">
+          <h2 id="cf-objects-title"><i data-lucide="list-tree" aria-hidden="true"></i>Объекты конфигурации</h2>
+          <span class="cf-selected-count" data-selected-count aria-live="polite">Отмечено 0</span>
+        </div>
+        <div class="cf-git-task" data-git-task hidden>
+          <div class="cf-git-task-fields">
+            <div class="cf-field cf-task-key">
+              <label for="cf-git-task-key">Номер задачи Git</label>
+              <input id="cf-git-task-key" type="search" placeholder="ERP-123" maxlength="64" autocomplete="off" spellcheck="false" disabled>
+            </div>
+            <div class="cf-field cf-choice-picker cf-period-picker">
+              <label id="cf-git-task-period-label" for="cf-git-task-period">Период поиска</label>
+              <button type="button" id="cf-git-task-period" class="cf-choice-toggle" value="recent"
+                      aria-controls="cf-git-task-period-options" aria-haspopup="menu" aria-expanded="false"
+                      aria-labelledby="cf-git-task-period-label cf-git-task-period-value" disabled>
+                <span id="cf-git-task-period-value">Последние 90 дней</span>
+              </button>
+              <div id="cf-git-task-period-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-git-task-period-label">
+                <button type="button" role="menuitemradio" value="recent" tabindex="-1" aria-checked="true">Последние 90 дней</button>
+                <button type="button" role="menuitemradio" value="custom" tabindex="-1" aria-checked="false">Указать дни…</button>
+                <button type="button" role="menuitemradio" value="all" tabindex="-1" aria-checked="false">Вся история</button>
+              </div>
+            </div>
+            <div class="cf-field cf-task-days" data-git-task-days hidden>
+              <label for="cf-git-task-days">Дней</label>
+              <input id="cf-git-task-days" type="number" min="1" step="1" value="90" required disabled
+                     aria-describedby="cf-git-task-days-error" title="Положительное целое количество суток до текущего момента">
+            </div>
+            <button type="button" class="cf-button" data-action="search-git-task" disabled><i data-lucide="search" aria-hidden="true"></i>Найти</button>
+            <button type="button" class="cf-button" data-action="cancel-git-task" hidden>Отменить</button>
+          </div>
+          <p class="cf-task-error" id="cf-git-task-days-error" role="status" hidden>Укажите целое количество дней больше нуля.</p>
+          <p class="cf-task-meta" data-git-task-hint>Откройте выбранную ветку для поиска по задаче.</p>
+          <div class="cf-task-meta" data-git-task-progress role="status" hidden>
+            <div data-git-task-scope></div><div data-git-task-scanned></div>
+          </div>
+          <div class="cf-git-task-result" data-git-task-result hidden>
+            <div class="cf-task-meta" role="status">
+              <div data-git-task-caption></div>
+              <div data-git-task-counts></div>
+            </div>
+            <div class="cf-git-task-actions">
+              <button type="button" class="cf-button" data-action="mark-git-task" title="Добавить все найденные по задаче объекты к отмеченным">Отметить найденные</button>
+              <button type="button" class="cf-button cf-quiet" data-action="clear-git-task">Сбросить отбор</button>
+            </div>
+          </div>
+        </div>
+        <div class="cf-filters">
+          <div class="cf-search">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input type="search" id="cf-search" aria-label="Поиск объектов" placeholder="Поиск по имени или типу объекта" autocomplete="off">
+          </div>
+          <label class="cf-selected-filter"><input id="cf-selected-only" type="checkbox"> Только выбранные</label>
+        </div>
+        <div class="cf-tree" aria-label="Объекты по типам">
+          <div class="cf-tree-header"><span>Тип и объект</span><span>Выбор</span></div>
+          <div data-groups></div>
+          <p class="cf-empty" data-empty-tree hidden>По этому запросу ничего не найдено.</p>
+        </div>
+        <div class="cf-pane-note">Отметка ставится флажком или пробелом.</div>
+      </section>
+
+      <section class="cf-pane cf-package" aria-labelledby="cf-package-title">
+        <div class="cf-panel-heading"><h2 id="cf-package-title"><i data-lucide="package" aria-hidden="true"></i>Состав комплекта</h2></div>
+        <div class="cf-tabs" role="tablist" aria-label="Состав комплекта">
+          <button type="button" role="tab" id="cf-whole-tab" aria-controls="cf-whole" aria-selected="true" data-tab="whole">Перенос целиком <span data-whole-count>0</span></button>
+          <button type="button" role="tab" id="cf-stubs-tab" aria-controls="cf-stubs" aria-selected="false" data-tab="stubs">Заглушки <span data-stub-count>0</span></button>
+        </div>
+        <div id="cf-whole" role="tabpanel" aria-labelledby="cf-whole-tab">
+          <table class="cf-data"><thead><tr><th scope="col">Объект</th><th scope="col">Тип</th></tr></thead><tbody data-whole-rows></tbody></table>
+          <p class="cf-empty" data-empty-whole hidden>Отметьте объекты в дереве.</p>
+        </div>
+        <div id="cf-stubs" role="tabpanel" aria-labelledby="cf-stubs-tab" hidden>
+          <table class="cf-data cf-stub-table" data-stub-table>
+            <colgroup><col><col><col class="cf-stub-choice-width"></colgroup>
+            <thead><tr><th scope="col">Заглушка</th><th scope="col">Требуется для</th><th scope="col" class="cf-stub-choice">В CF</th></tr></thead>
+          </table>
+          <p class="cf-empty" data-empty-stubs hidden>Нажмите «Предпросмотр», чтобы увидеть заглушки.</p>
+        </div>
+        <div class="cf-preview-note">
+          <i data-lucide="file-output" aria-hidden="true"></i><span>Выходные файлы</span><code>.cf</code><code>.merge-settings.xml</code>
+        </div>
+      </section>
+    </div>
+
+    <footer class="cf-footer">
+      <div class="cf-footer-actions">
+        <button type="button" class="cf-button" data-action="preview" disabled title="Показать объекты и причины включения заглушек"><i data-lucide="list-checks" aria-hidden="true"></i>Предпросмотр</button>
+        <input id="cf-task" type="text" aria-label="Номер задачи или комментарий" placeholder="Номер задачи или комментарий" title="Необязательное поле для имени папки комплекта" spellcheck="false">
+        <button type="button" class="cf-button cf-primary" data-action="build" disabled title="Собрать CF и сверить её обратной выгрузкой"><i data-lucide="package-check" aria-hidden="true"></i>Собрать CF</button>
+        <button type="button" class="cf-button cf-quiet" data-action="package" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Открыть комплект</button>
+        <button type="button" class="cf-button cf-quiet cf-journal-action" data-action="journal" disabled title="Показать журнал последней операции"><i data-lucide="file-text" aria-hidden="true"></i>Открыть журнал</button>
+      </div>
+      <div class="cf-status" aria-live="polite">
+        <span class="cf-status-main"><span class="cf-status-dot" aria-hidden="true"></span><span data-status>Открываю мастер…</span></span>
+        <span class="cf-secondary" data-platform-version></span>
+      </div>
+    </footer>
+  </section>
+  <dialog class="cf-dialog cf-preferences" id="cf-preferences" aria-labelledby="cf-settings-title">
+    <form method="dialog">
+      <div class="cf-preferences-header">
+        <h2 id="cf-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i>Настройки</h2>
+        <button type="submit" class="cf-button cf-close-settings" aria-label="Закрыть настройки">×</button>
+      </div>
+      <div class="cf-preferences-body">
+        <section class="cf-preferences-section" aria-label="Рабочие папки">
+          <h3>Рабочие папки</h3>
+          <div class="cf-fields">
+            <div class="cf-field cf-wide">
+              <label for="cf-source">Локальная XML-выгрузка</label>
+              <div class="cf-field-actions">
+                <input id="cf-source" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-source" title="Выбрать папку XML-выгрузки"><i data-lucide="folder-open" aria-hidden="true"></i>Папка</button>
+                <button type="button" class="cf-button" data-picker="cf-source" data-file="Configuration.xml" title="Выбрать Configuration.xml"><i data-lucide="file-code" aria-hidden="true"></i>Configuration.xml</button>
+              </div>
+            </div>
+            <div class="cf-field">
+              <label for="cf-result">Папка результата</label>
+              <div class="cf-field-actions">
+                <input id="cf-result" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-result" aria-label="Выбрать папку результата" title="Выбрать папку результата"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+            </div>
+            <div class="cf-field">
+              <label for="cf-logs">Папка журналов</label>
+              <div class="cf-field-actions">
+                <input id="cf-logs" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-logs" aria-label="Выбрать папку журналов" title="Выбрать папку журналов"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+            </div>
+            <div class="cf-field cf-wide">
+              <label for="cf-index">Папка индексов SQLite</label>
+              <div class="cf-field-actions">
+                <input id="cf-index" type="text" spellcheck="false" aria-describedby="cf-index-info">
+                <button type="button" class="cf-button" data-picker="cf-index" aria-label="Выбрать папку индексов" title="Выбрать папку индексов"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+              <small id="cf-index-info" class="cf-secondary" aria-live="polite"></small>
+            </div>
+          </div>
+        </section>
+        <section class="cf-preferences-section" aria-label="Сборка">
+          <h3>Сборка</h3>
+          <div class="cf-field cf-platform-fields">
+            <div class="cf-choice-picker">
+              <label id="cf-build-label" for="cf-build-mode">Способ сборки</label>
+              <button type="button" id="cf-build-mode" class="cf-choice-toggle" aria-controls="cf-build-options" aria-haspopup="menu"
+                      aria-expanded="false" aria-labelledby="cf-build-label cf-build-value"
+                      title="В режиме «Авто» используется Конфигуратор 8.3.27.2214" disabled>
+                <span id="cf-build-value">Авто</span>
+              </button>
+              <div id="cf-build-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-build-label">
+                <button type="button" role="menuitemradio" value="auto" tabindex="-1" aria-checked="true">Авто</button>
+                <button type="button" role="menuitemradio" value="ibcmd" tabindex="-1" aria-checked="false">ibcmd</button>
+                <button type="button" role="menuitemradio" value="designer" tabindex="-1" aria-checked="false">Конфигуратор</button>
+              </div>
+            </div>
+            <div>
+              <label for="cf-platform">Платформа 1С</label>
+              <div class="cf-field-actions">
+                <input id="cf-platform" type="text" list="cf-platforms" spellcheck="false">
+                <datalist id="cf-platforms"></datalist>
+                <button type="button" class="cf-button" data-picker="cf-platform" aria-label="Выбрать исполняемый файл платформы"><i data-lucide="file-cog" aria-hidden="true"></i>Выбрать</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="cf-preferences-section cf-gitea-settings" aria-label="Подключение Git">
+          <div><h3>Git</h3><span class="cf-secondary" id="cf-git-location"></span></div>
+          <button type="button" class="cf-button" data-action="git-connect"><i data-lucide="workflow" aria-hidden="true"></i>Подключение Git…</button>
+        </section>
+      </div>
+      <div class="cf-preferences-footer"><button type="submit" class="cf-button cf-primary">Готово</button></div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog" aria-labelledby="cf-dialog-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-dialog-title"></h2>
+      <p data-dialog-text></p>
+      <p data-dialog-links hidden><a data-link="repository" href="#">Проект alonehobo</a> · <a data-link="licenses" href="#">Wry / WebView2</a> · <a data-link="icons" href="#">Лицензия значков</a></p>
+      <div class="cf-dialog-actions">
+        <button type="submit" class="cf-button">Закрыть</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog cf-journal" aria-labelledby="cf-journal-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-journal-title">Журнал работы</h2>
+      <p class="cf-secondary" data-journal-path></p>
+      <textarea readonly spellcheck="false" aria-label="Содержимое журнала" data-journal-text></textarea>
+      <div class="cf-dialog-actions"><button type="submit" class="cf-button">Закрыть</button></div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog cf-help" aria-labelledby="cf-help-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-help-title">Как собрать техническую CF</h2>
+      <ol>
+        <li>Мастер открывает сохранённую выгрузку при запуске. Путь к локальной папке или <code>Configuration.xml</code> можно выбрать в <strong>Настройках</strong>. Для открытия по введённому пути нажмите <strong>Открыть выгрузку</strong>.</li>
+        <li>Для Gitea или GitHub выберите <strong>Git</strong>. В окне <strong>Настройки → Подключение Git</strong> выберите API сервиса и введите персональный токен на чтение. Для GitHub.com используйте PAT только нужного репозитория с Contents: Read-only. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>
+        <li>Чтобы отобрать объекты по задаче, введите <strong>Номер задачи Git</strong>, выберите период и нажмите <strong>Найти</strong>. По умолчанию проверяются последние 90 дней. Для своего интервала выберите <strong>Указать дни…</strong> и введите целое число больше нуля; <strong>Вся история</strong> снимает ограничение дат. <strong>Отметить найденные</strong> добавляет найденные объекты к уже отмеченным. Комплект использует состояние объектов в открытой ревизии ветки.</li>
+        <li>GitHub загружает XML для индекса пакетами, без полного архива репозитория. Отбор задачи учитывает полный список путей; merge сравнивается с первым родителем. Токены Gitea и GitHub хранятся раздельно.</li>
+        <li>Подготовьте отдельный индекс ветки кнопкой <strong>Создать индекс</strong>. Мастер получает XML-описания и затем запрашивает файлы выбранных объектов по мере работы. При смене источника можно выбрать папку SQLite. Интервал проверки SHA задаётся в настройках подключения Git. Значение 0 выключает проверку.</li>
+        <li>В необязательное поле можно вписать номер задачи, дату или комментарий. Мастер использует текст в имени папки комплекта и заменяет недопустимые символы.</li>
+        <li>Для ускорения поиска зависимостей нажмите <strong>Создать индекс</strong>. У каждой XML-выгрузки свой файл SQLite. После обновления выгрузки нажмите <strong>Обновить индекс</strong>. Мастер пересчитывает записи изменившихся объектов.</li>
+        <li>Отметьте нужные объекты. Фильтр <strong>Только выбранные</strong> покажет все отмеченные объекты с учётом поиска. Нажмите <strong>Предпросмотр</strong>, чтобы увидеть зависимости и заглушки.</li>
+        <li>На вкладке <strong>Заглушки</strong> раскройте нужную группу, чтобы увидеть объекты и причины включения. Снять флажок можно, если сборщик нашёл ссылки на заглушку только в комментариях BSL. Обязательные заглушки отмечены словом «обяз.».</li>
+        <li>В <strong>Настройках</strong> укажите папку результата и способ сборки. В режиме <strong>Авто</strong> мастер выбирает Конфигуратор версии 8.3.27.2214. Для ручного выбора укажите <strong>ibcmd</strong> или <strong>Конфигуратор</strong> и соответствующий <code>ibcmd.exe</code> или <code>1cv8.exe</code> из папки <code>bin</code> установленной 1С.</li>
+        <li>Нажмите <strong>Собрать CF</strong>. Мастер подготовит XML и проверит CF обратной выгрузкой. Кнопка <strong>Открыть комплект</strong> откроет папку с CF и настройками объединения. Если поле задачи пустое, папка именуется по дате и времени.</li>
+      </ol>
+      <p>Git-индекс сохраняется между запусками. При прежних XML он готов и после смены SHA. Если XML изменились, мастер покажет «Нужно обновить»: обновление выполняется по кнопке только для изменившихся входов. Старому индексу потребуется однократная полная проверка. Прежний предпросмотр другой ревизии сбрасывается.</p>
+      <p>Кнопка <strong>Открыть журнал</strong> показывает журнал последней операции в отдельном окне мастера. Журнал доступен после создания или обновления индекса, предпросмотра и сборки. Кнопка <strong>Папка журналов</strong> над деревом открывает каталог всех журналов.</p>
+      <p>Если мастер показал ошибку или закрылся во время работы, откройте подпапку <strong>Ошибки</strong> и найдите файл по дате и времени запуска.</p>
+      <div class="cf-dialog-actions"><button type="submit" class="cf-button">Закрыть</button></div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog cf-preferences" id="cf-git-dialog" aria-labelledby="cf-git-title">
+    <form id="cf-git-form">
+      <header class="cf-preferences-header"><strong id="cf-git-title">Подключение Git</strong></header>
+      <div class="cf-preferences-body">
+        <div><span>API сервиса</span><div class="cf-source-options" role="group" aria-label="API сервиса">
+          <button type="button" class="cf-button" data-provider="gitea" aria-pressed="true">Gitea</button>
+          <button type="button" class="cf-button" data-provider="github" aria-pressed="false">GitHub</button>
+        </div></div>
+        <div class="cf-field"><label for="git-server">Адрес HTTPS</label><input class="cf-input" id="git-server" name="server" type="url" required placeholder="https://git.example.ru"></div>
+        <div class="cf-fields">
+          <div class="cf-field"><label for="git-repository">Репозиторий</label><input class="cf-input" id="git-repository" name="repository" required placeholder="владелец/репозиторий"></div>
+          <div class="cf-field"><label for="git-directory">Каталог XML-выгрузки</label><input class="cf-input" id="git-directory" name="directory" required value="config"></div>
+          <div class="cf-field"><label for="git-branch">Ветка при подключении</label><input class="cf-input" id="git-branch" name="branch" required placeholder="main"></div>
+          <div class="cf-field"><label for="git-interval">Проверять SHA, секунд</label><input class="cf-input" id="git-interval" name="interval" type="number" min="0" max="86400" value="60"><small>0 — автоматическая проверка отключена; иначе от 30 секунд.</small></div>
+        </div>
+        <div class="cf-field"><label for="git-cache">Папка кэша</label><div class="cf-field-actions"><input class="cf-input" id="git-cache" name="cache" required><button type="button" class="cf-button" id="git-pick-cache">Выбрать…</button></div></div>
+        <div class="cf-field"><label for="git-token">Персональный токен</label><input class="cf-input" id="git-token" name="token" type="password" autocomplete="off" placeholder="Введите или оставьте пустым для сохранённого токена"></div>
+        <label><input type="checkbox" id="git-remember"> Запомнить на этом компьютере</label>
+        <small>Токен хранится в Диспетчере учётных данных Windows. В настройки и журналы он не записывается.</small>
+        <p id="git-connection-status" aria-live="polite"></p>
+      </div>
+      <footer class="cf-preferences-footer">
+        <button type="button" class="cf-button" id="git-delete-token">Удалить токен</button>
+        <button type="button" class="cf-button" id="git-cancel">Отмена</button>
+        <button type="submit" class="cf-button cf-primary">Подключить</button>
+      </footer>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog" id="cf-index-prompt"><form method="dialog" class="cf-dialog-body">
+    <h2>Смена источника XML</h2><p id="cf-index-prompt-text"></p>
+    <div class="cf-dialog-actions"><button type="submit" class="cf-button" value="keep">Оставить папку</button><button type="submit" class="cf-button cf-primary" value="choose">Выбрать другую…</button></div>
+  </form></dialog>
+</div>
+</body>
+</html>

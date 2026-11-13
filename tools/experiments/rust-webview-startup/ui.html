@@ -1,0 +1,1101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-gpqvkjRe909corFiEtl7hshLdUD9MTLiGRE8diEnebc='; style-src 'self' 'sha256-i0hczv52+1/ymbdYP1t+reX/Kc720X6FHkaFUmJWp2A='; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Мастер технической CF</title>
+<style>#cf-wizard-preview {
+    --cf-window: #1e1f22; --cf-panel: #25262a; --cf-bar: #2b2d30; --cf-input: #1b1c1f;
+    --cf-border: #3b3e45; --cf-text: #e1e3e8; --cf-muted: #a7abb6; --cf-blue: #2e67d0;
+    --cf-link: #91b8ff; --cf-selected: #273b60; --cf-green: #7ac594;
+    --cf-row: 32px; --cf-tree-share: 54%; --cf-package-share: 46%;
+    color: var(--cf-text); color-scheme: dark; font: 13px/1.43 "Segoe UI", system-ui, sans-serif;
+    inline-size: 100%;
+  }
+  #cf-wizard-preview *, #cf-wizard-preview *::before, #cf-wizard-preview *::after { box-sizing: border-box; }
+  #cf-wizard-preview [hidden] { display: none !important; }
+  #cf-wizard-preview .cf-window { background: var(--cf-window); border: 1px solid var(--cf-border); border-radius: 10px; overflow: hidden; }
+  #cf-wizard-preview .cf-window-bar, #cf-wizard-preview .cf-brand, #cf-wizard-preview .cf-window-tools,
+  #cf-wizard-preview .cf-panel-heading, #cf-wizard-preview .cf-footer-actions, #cf-wizard-preview .cf-status,
+  #cf-wizard-preview .cf-status-main { display: flex; align-items: center; gap: 9px; }
+  #cf-wizard-preview .cf-window-bar { justify-content: space-between; flex-wrap: wrap; background: var(--cf-bar); padding: 8px 15px; border-bottom: 1px solid var(--cf-border); min-height: 50px; }
+  #cf-wizard-preview .cf-brand { font-size: 14px; font-weight: 600; }
+  #cf-wizard-preview .cf-app-mark { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--cf-blue); color: white; font: 700 11px/1 "Segoe UI", sans-serif; }
+  #cf-wizard-preview .cf-source-toolbar { padding: 10px 15px; border-bottom: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-source-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+  #cf-wizard-preview .cf-source-label { display: block; margin-bottom: 3px; font-size: 12px; }
+  #cf-wizard-preview .cf-source-options { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--cf-border); border-radius: 6px; background: var(--cf-input); }
+  #cf-wizard-preview .cf-source-options .cf-button { min-height: 26px; padding: 2px 8px; background: transparent; border-color: transparent; }
+  #cf-wizard-preview .cf-source-options .cf-button:hover:not(:disabled) { background: var(--cf-bar); }
+  #cf-wizard-preview .cf-source-options .cf-button[aria-pressed="true"] { background: var(--cf-selected); color: var(--cf-link); }
+  #cf-wizard-preview .cf-source-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  #cf-wizard-preview .cf-settings-action { margin-left: auto; }
+  #cf-wizard-preview .cf-source-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 15px; margin-top: 8px; color: var(--cf-muted); font-size: 12px; }
+  #cf-wizard-preview .cf-source-caption, #cf-wizard-preview .cf-index-indicator { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+  #cf-wizard-preview .cf-source-caption strong { color: var(--cf-text); }
+  #cf-wizard-preview .cf-index-indicator.cf-index-needed { color: #ddb667; }
+  #cf-wizard-preview .cf-index-needed .cf-status-dot { background: #ddb667; }
+  #cf-wizard-preview h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 14px; font-weight: 600; }
+  #cf-wizard-preview .cf-panel-heading { justify-content: space-between; flex-wrap: wrap; margin-bottom: 8px; }
+  #cf-wizard-preview .cf-selected-count { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 4px; color: var(--cf-link); background: var(--cf-selected); }
+  #cf-wizard-preview .cf-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; row-gap: 8px; }
+  #cf-wizard-preview .cf-wide { grid-column: 1 / -1; }
+  #cf-wizard-preview .cf-field label { display: block; margin-bottom: 3px; font-size: 12px; color: var(--cf-text); }
+  #cf-wizard-preview .cf-secondary { color: var(--cf-muted); }
+  #cf-wizard-preview .cf-field-actions { display: flex; align-items: stretch; gap: 5px; min-width: 0; }
+  #cf-wizard-preview .cf-platform-fields { display: grid; grid-template-columns: minmax(126px, 0.42fr) minmax(0, 1fr); gap: 8px; }
+  #cf-wizard-preview input[type="text"], #cf-wizard-preview input[type="search"], #cf-wizard-preview input[type="number"], #cf-wizard-preview .cf-choice-toggle {
+    background: var(--cf-input); border: 1px solid var(--cf-border); color: var(--cf-text); padding: 6px 9px;
+    border-radius: 5px; width: 100%; min-width: 0; height: 32px; font: inherit;
+  }
+  #cf-wizard-preview .cf-choice-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    user-select: none;
+  }
+  #cf-wizard-preview .cf-choice-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cf-wizard-preview .cf-choice-toggle::after {
+    content: ""; flex: 0 0 6px; height: 6px; margin: -3px 1px 0 0;
+    border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg);
+  }
+  #cf-wizard-preview .cf-choice-picker { position: relative; min-width: 0; }
+  #cf-wizard-preview .cf-branch-picker { width: clamp(116px, 15vw, 180px); }
+  #cf-wizard-preview .cf-choice-menu {
+    position: absolute; z-index: 5; top: calc(100% + 3px); left: 0; right: 0;
+    max-height: min(250px, 40vh); overflow-y: auto;
+    padding: 3px; border: 1px solid var(--cf-border);
+    border-radius: 5px; background: var(--cf-bar); color: var(--cf-text); user-select: none;
+  }
+  #cf-wizard-preview .cf-choice-menu button {
+    display: flex; align-items: center; justify-content: space-between; width: 100%;
+    padding: 5px 6px; border: 0; border-radius: 3px;
+    background: transparent; color: inherit; font: inherit; text-align: left; overflow-wrap: anywhere;
+  }
+  #cf-wizard-preview .cf-choice-menu button:focus { background: var(--cf-selected); outline: none; }
+  #cf-wizard-preview .cf-choice-menu button[aria-checked="true"] { color: var(--cf-link); }
+  #cf-wizard-preview .cf-choice-menu button[aria-checked="true"]::after {
+    content: ""; flex: 0 0 5px; height: 9px; margin: -3px 2px 0 0;
+    border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg);
+  }
+  #cf-wizard-preview input::placeholder { color: var(--cf-muted); }
+  #cf-wizard-preview .cf-button {
+    display: inline-flex; gap: 6px; align-items: center; justify-content: center; flex: 0 0 auto;
+    min-height: 32px; padding: 4px 9px; border: 1px solid var(--cf-border); border-radius: 5px;
+    background: var(--cf-bar); color: var(--cf-text); font: inherit; white-space: nowrap;
+  }
+  #cf-wizard-preview .cf-button:hover:not(:disabled) { background: #353840; }
+  #cf-wizard-preview .cf-button:disabled { opacity: .47; }
+  #cf-wizard-preview .cf-quiet { background: transparent; }
+  #cf-wizard-preview .cf-primary { background: var(--cf-blue); border-color: var(--cf-blue); color: white; font-weight: 600; }
+  #cf-wizard-preview .cf-primary:hover:not(:disabled) { background: #3574e9; }
+  #cf-wizard-preview [data-lucide] { display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; vertical-align: -2px; }
+  #cf-wizard-preview i[data-lucide] { display: none; }
+  #cf-wizard-preview .cf-workspace { display: grid; grid-template-columns: minmax(0,var(--cf-tree-share)) minmax(0,var(--cf-package-share)); background: var(--cf-panel); }
+  #cf-wizard-preview .cf-pane { display: flex; flex-direction: column; min-width: 0; padding: 12px 14px 10px; }
+  #cf-wizard-preview .cf-package { border-left: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-git-task { display: grid; gap: 6px; margin-bottom: 9px; padding: 8px; background: var(--cf-window); border: 1px solid var(--cf-border); border-radius: 5px; }
+  #cf-wizard-preview .cf-git-task-fields { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 6px; }
+  #cf-wizard-preview .cf-task-key { flex: 1 1 110px; }
+  #cf-wizard-preview .cf-period-picker { width: 164px; }
+  #cf-wizard-preview .cf-task-days { flex: 0 0 76px; width: 76px; }
+  #cf-wizard-preview .cf-task-error { margin: 0; color: #f2a9a9; font-size: 12px; }
+  #cf-wizard-preview .cf-task-meta { margin: 0; color: var(--cf-muted); font-size: 12px; overflow-wrap: anywhere; }
+  #cf-wizard-preview .cf-git-task-result { display: grid; gap: 6px; }
+  #cf-wizard-preview .cf-git-task-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  #cf-wizard-preview .cf-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; }
+  #cf-wizard-preview .cf-search { position: relative; flex: 1 1 210px; }
+  #cf-wizard-preview .cf-selected-filter { display: flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--cf-muted); }
+  #cf-wizard-preview .cf-selected-filter input { width: auto; min-height: 0; accent-color: var(--cf-blue); }
+  #cf-wizard-preview .cf-search > [data-lucide] { position: absolute; inset: 9px auto auto 9px; color: var(--cf-muted); pointer-events: none; }
+  #cf-wizard-preview .cf-search input { padding-left: 30px; }
+  #cf-wizard-preview .cf-tree { background: var(--cf-window); border: 1px solid var(--cf-border); border-radius: 5px; overflow: hidden; }
+  #cf-wizard-preview .cf-tree-header { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 11px; color: var(--cf-muted); background: var(--cf-bar); }
+  #cf-wizard-preview .cf-tree summary { min-height: var(--cf-row); padding: 6px 9px; font-weight: 600; background: #292b30; border-top: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-tree summary [data-lucide] { margin-right: 6px; color: var(--cf-link); }
+  #cf-wizard-preview .cf-group-count { font-size: 11px; font-weight: 400; color: var(--cf-muted); padding-left: 5px; }
+  #cf-wizard-preview .cf-object { display: grid; grid-template-columns: minmax(0, 1fr) 52px; align-items: center; min-height: var(--cf-row); }
+  #cf-wizard-preview .cf-object:hover { background: var(--cf-bar); }
+  #cf-wizard-preview .cf-object.cf-focused { background: var(--cf-selected); }
+  #cf-wizard-preview .cf-object-name { border: 0; background: transparent; color: inherit; min-height: var(--cf-row); padding: 4px 6px 4px 28px; text-align: left; font: inherit; overflow-wrap: anywhere; }
+  #cf-wizard-preview .cf-pane-note { margin-top: 7px; color: var(--cf-muted); font-size: 11px; }
+  #cf-wizard-preview .cf-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--cf-border); margin-bottom: 7px; }
+  #cf-wizard-preview .cf-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--cf-muted); padding: 6px 8px; font: inherit; }
+  #cf-wizard-preview .cf-tabs button[aria-selected="true"] { border-bottom-color: #6195f6; color: var(--cf-text); }
+  #cf-wizard-preview .cf-tabs button span { margin-left: 4px; color: var(--cf-link); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #cf-wizard-preview .cf-data { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
+  #cf-wizard-preview .cf-data th { font-weight: 500; font-size: 11px; color: var(--cf-muted); background: var(--cf-bar); }
+  #cf-wizard-preview .cf-data th, #cf-wizard-preview .cf-data td { padding: 7px 8px; overflow-wrap: anywhere; border-bottom: 1px solid var(--cf-border); vertical-align: top; }
+  #cf-wizard-preview .cf-data td { color: var(--cf-text); }
+  #cf-wizard-preview .cf-data td span { display: block; color: inherit; }
+  #cf-wizard-preview .cf-data td .cf-type { color: var(--cf-muted); font-size: 11px; }
+  #cf-wizard-preview .cf-stub-choice-width { width: 58px; }
+  #cf-wizard-preview .cf-data .cf-stub-choice { text-align: center; vertical-align: middle; }
+  #cf-wizard-preview .cf-stub-group th { padding: 0; background: #30323a; color: var(--cf-text); font-size: 12px; font-weight: 600; }
+  #cf-wizard-preview .cf-stub-group-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 8px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+  #cf-wizard-preview .cf-stub-group-toggle [data-lucide] { color: var(--cf-link); }
+  #cf-wizard-preview .cf-stub-group-toggle .cf-group-count { margin-left: auto; }
+  #cf-wizard-preview .cf-stub-group-toggle[aria-expanded="true"] .cf-stub-arrow { transform: rotate(90deg); }
+  #cf-wizard-preview .cf-stub-collapsed > tr:not(.cf-stub-group) { display: none; }
+  #cf-wizard-preview .cf-stub-branch > tr > td:first-child { padding-left: 28px; }
+  #cf-wizard-preview .cf-data td .cf-stub-required { color: var(--cf-muted); font-size: 11px; }
+  #cf-wizard-preview .cf-stub-omitted td:not(:last-child) { color: var(--cf-muted); }
+  #cf-wizard-preview .cf-empty { padding: 8px; margin: 0; color: var(--cf-muted); }
+  #cf-wizard-preview .cf-preview-note { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: auto; padding-top: 10px; color: var(--cf-muted); font-size: 11px; }
+  #cf-wizard-preview .cf-preview-note code { color: var(--cf-text); background: var(--cf-window); padding: 2px 5px; border-radius: 3px; font-size: 11px; }
+  #cf-wizard-preview .cf-footer { border-top: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-footer-actions { padding: 9px 15px; flex-wrap: wrap; gap: 7px; }
+  #cf-wizard-preview .cf-journal-action { margin-left: auto; }
+  #cf-wizard-preview .cf-footer-actions #cf-task { width: min(235px, 100%); }
+  #cf-wizard-preview .cf-status { justify-content: space-between; flex-wrap: wrap; padding: 6px 15px; font-size: 11px; background: var(--cf-bar); border-top: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--cf-green); }
+  #cf-wizard-preview .cf-status-dot.cf-waiting { background: #ddb667; }
+  #cf-wizard-preview .cf-dialog { max-width: min(430px, calc(100% - 24px)); width: 100%; padding: 0; color: var(--cf-text); background: var(--cf-panel); border: 1px solid var(--cf-border); border-radius: 8px; }
+  #cf-wizard-preview .cf-preferences { max-width: min(640px, calc(100% - 24px)); max-height: calc(100% - 24px); background: var(--cf-window); }
+  #cf-wizard-preview .cf-preferences-header, #cf-wizard-preview .cf-preferences-footer { display: flex; align-items: center; justify-content: space-between; padding: 9px 14px; background: var(--cf-bar); }
+  #cf-wizard-preview .cf-preferences-header { border-bottom: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-preferences-footer { justify-content: flex-end; border-top: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-close-settings { min-width: 28px; min-height: 28px; padding: 0; font-size: 17px; }
+  #cf-wizard-preview .cf-preferences-body { display: grid; gap: 11px; padding: 12px 14px; }
+  #cf-wizard-preview .cf-preferences-section + .cf-preferences-section { padding-top: 10px; border-top: 1px solid var(--cf-border); }
+  #cf-wizard-preview .cf-preferences-section h3 { margin: 0 0 6px; font-size: inherit; }
+  #cf-wizard-preview .cf-gitea-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 7px; }
+  #cf-wizard-preview .cf-gitea-settings h3 { margin-bottom: 2px; }
+  #cf-wizard-preview .cf-dialog::backdrop { background: rgba(0,0,0,.52); }
+  #cf-wizard-preview .cf-dialog-body { padding: 15px; }
+  #cf-wizard-preview .cf-dialog p { margin: 8px 0 10px; white-space: pre-line; overflow-wrap: anywhere; }
+  #cf-wizard-preview .cf-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+  @media (max-width: 710px) {
+    #cf-wizard-preview .cf-window-bar { padding-right: 12px; }
+    #cf-wizard-preview .cf-settings-action { margin-left: 0; }
+    #cf-wizard-preview .cf-workspace { grid-template-columns: 1fr; }
+    #cf-wizard-preview .cf-package { border-left: 0; border-top: 1px solid var(--cf-border); }
+  }
+  @media (max-width: 480px) {
+    #cf-wizard-preview .cf-fields { grid-template-columns: 1fr; }
+    #cf-wizard-preview .cf-wide { grid-column: auto; }
+    #cf-wizard-preview .cf-wide .cf-field-actions { flex-wrap: wrap; }
+    #cf-wizard-preview .cf-wide input { flex: 1 0 100%; }
+    #cf-wizard-preview .cf-journal-action { margin-left: 0; }
+  }
+  @media (pointer: coarse) {
+    #cf-wizard-preview .cf-button, #cf-wizard-preview .cf-object-name, #cf-wizard-preview .cf-tree summary { min-height: 44px; }
+  }
+
+/* The desktop window keeps the same design while scrolling the two lists independently. */
+html, body { height: 100%; margin: 0; background: #1e1f22; }
+#cf-wizard-preview { height: 100%; }
+#cf-wizard-preview .cf-window { display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; height: 100%; border: 0; border-radius: 0; }
+#cf-wizard-preview .cf-pane { min-height: 0; }
+#cf-wizard-preview .cf-tree,
+#cf-wizard-preview [role="tabpanel"] { min-height: 0; overflow: auto; flex: 1 1 0; scrollbar-color: #565b66 var(--cf-window); }
+#cf-wizard-preview .cf-tree-header,
+#cf-wizard-preview .cf-data thead { position: sticky; top: 0; z-index: 1; }
+#cf-wizard-preview .cf-tree { margin-bottom: 0; }
+#cf-wizard-preview .cf-checkbox {
+  position: relative; display: inline-grid; justify-self: center; vertical-align: middle; width: 16px; height: 16px;
+}
+#cf-wizard-preview .cf-checkbox input {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer;
+}
+#cf-wizard-preview .cf-checkbox .cf-check-indicator {
+  display: grid; place-items: center; pointer-events: none;
+  background: var(--cf-input); border: 1px solid #8690a2; border-radius: 4px;
+}
+#cf-wizard-preview .cf-check-indicator.cf-checked { background: var(--cf-blue); border-color: #7da9fc; }
+#cf-wizard-preview .cf-checkbox .cf-check-tick {
+  visibility: hidden; width: 4px; height: 7px; border: solid white; border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+#cf-wizard-preview .cf-check-indicator.cf-checked .cf-check-tick { visibility: visible; }
+#cf-wizard-preview .cf-checkbox input:disabled { cursor: default; }
+#cf-wizard-preview .cf-checkbox input:disabled + .cf-check-indicator { opacity: .55; }
+#cf-wizard-preview .cf-checkbox input:focus-visible + .cf-check-indicator { outline: 2px solid #80abfb; outline-offset: 2px; }
+#cf-wizard-preview :focus-visible { outline: 2px solid #80abfb; outline-offset: -2px; }
+#cf-wizard-preview a { color: var(--cf-link); }
+#cf-wizard-preview .cf-journal { width: 920px; max-width: calc(100% - 32px); }
+#cf-wizard-preview .cf-journal textarea {
+  display: block; width: 100%; height: min(52vh, 480px); resize: none;
+  padding: 9px; background: var(--cf-input); color: var(--cf-text);
+  border: 1px solid var(--cf-border); border-radius: 5px;
+  font: 12px/1.5 Consolas, monospace; white-space: pre; overflow: auto;
+}
+#cf-wizard-preview .cf-help { width: 640px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); }
+#cf-wizard-preview .cf-help ol { padding-left: 22px; }
+#cf-wizard-preview .cf-help li { margin-bottom: 8px; }
+#cf-wizard-preview .cf-status-dot.cf-error { background: #e48b83; }
+#cf-wizard-preview .cf-more { margin: 5px 10px 5px 26px; font-size: 11px; }
+@media (max-width: 710px) {
+  #cf-wizard-preview .cf-window { display: block; height: auto; }
+  #cf-wizard-preview .cf-tree, #cf-wizard-preview [role="tabpanel"] { flex: auto; max-height: 330px; }
+}
+</style>
+
+
+
+</head>
+<body>
+<div id="cf-wizard-preview" aria-label="Мастер технической CF">
+  <section class="cf-window" aria-label="Мастер технической CF">
+    <header class="cf-window-bar">
+      <div class="cf-brand"><span class="cf-app-mark" aria-hidden="true">CF</span><span>Мастер технической CF</span></div>
+      <div class="cf-window-tools">
+        <button type="button" class="cf-button cf-quiet" data-action="help" title="Справка (F1)"><i data-lucide="book-open" aria-hidden="true"></i>Справка</button>
+        <button type="button" class="cf-button cf-quiet" data-action="about"><i data-lucide="info" aria-hidden="true"></i>О программе</button>
+      </div>
+    </header>
+
+    <section class="cf-source-toolbar" aria-label="Работа с выгрузкой">
+      <div class="cf-source-row">
+        <div class="cf-field">
+          <span class="cf-source-label" id="cf-source-label">Источник XML</span>
+          <div class="cf-source-options" role="group" aria-labelledby="cf-source-label">
+            <button type="button" class="cf-button" data-source-mode="local" aria-pressed="true" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Локальная папка</button>
+            <button type="button" class="cf-button" data-source-mode="git" aria-pressed="false" disabled><i data-lucide="workflow" aria-hidden="true"></i>Git</button>
+          </div>
+        </div>
+        <div class="cf-field cf-choice-picker cf-branch-picker" id="cf-git-source" hidden>
+          <label id="cf-git-branch-label" for="cf-git-branch">Ветка Git</label>
+          <button type="button" id="cf-git-branch" class="cf-choice-toggle" aria-controls="cf-git-branch-options"
+                  aria-haspopup="menu" aria-expanded="false" aria-labelledby="cf-git-branch-label cf-git-branch-value" disabled>
+            <span id="cf-git-branch-value"></span>
+          </button>
+          <div id="cf-git-branch-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-git-branch-label"></div>
+        </div>
+        <div class="cf-source-actions">
+          <button type="button" class="cf-button" data-action="open-source" disabled><i data-lucide="folder-open" aria-hidden="true"></i><span data-open-source>Открыть выгрузку</span></button>
+          <button type="button" class="cf-button" data-action="refresh-index" disabled title="Проверить изменения выгрузки и обновить индекс"><i data-lucide="database" aria-hidden="true"></i><span data-index-command>Создать индекс</span></button>
+          <button type="button" class="cf-button" data-action="logs" disabled title="Открыть папку всех журналов"><i data-lucide="folder-search" aria-hidden="true"></i>Папка журналов</button>
+        </div>
+        <button type="button" class="cf-button cf-settings-action" data-action="settings" aria-haspopup="dialog" aria-controls="cf-preferences" disabled><i data-lucide="settings-2" aria-hidden="true"></i>Настройки</button>
+      </div>
+      <div class="cf-source-summary" data-source-summary aria-live="polite" hidden>
+        <span class="cf-source-caption"><i data-lucide="database" aria-hidden="true"></i><strong data-config-name></strong><span data-active-source></span></span>
+        <span class="cf-index-indicator" data-index-status><span class="cf-status-dot" aria-hidden="true"></span><span data-index-label></span></span>
+        <span data-git-poll hidden></span>
+      </div>
+    </section>
+
+    <div class="cf-workspace">
+      <section class="cf-pane cf-objects" aria-labelledby="cf-objects-title">
+        <div class="cf-panel-heading">
+          <h2 id="cf-objects-title"><i data-lucide="list-tree" aria-hidden="true"></i>Объекты конфигурации</h2>
+          <span class="cf-selected-count" data-selected-count aria-live="polite">Отмечено 0</span>
+        </div>
+        <div class="cf-git-task" data-git-task hidden>
+          <div class="cf-git-task-fields">
+            <div class="cf-field cf-task-key">
+              <label for="cf-git-task-key">Номер задачи Git</label>
+              <input id="cf-git-task-key" type="search" placeholder="ERP-123" maxlength="64" autocomplete="off" spellcheck="false" disabled>
+            </div>
+            <div class="cf-field cf-choice-picker cf-period-picker">
+              <label id="cf-git-task-period-label" for="cf-git-task-period">Период поиска</label>
+              <button type="button" id="cf-git-task-period" class="cf-choice-toggle" value="recent"
+                      aria-controls="cf-git-task-period-options" aria-haspopup="menu" aria-expanded="false"
+                      aria-labelledby="cf-git-task-period-label cf-git-task-period-value" disabled>
+                <span id="cf-git-task-period-value">Последние 90 дней</span>
+              </button>
+              <div id="cf-git-task-period-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-git-task-period-label">
+                <button type="button" role="menuitemradio" value="recent" tabindex="-1" aria-checked="true">Последние 90 дней</button>
+                <button type="button" role="menuitemradio" value="custom" tabindex="-1" aria-checked="false">Указать дни…</button>
+                <button type="button" role="menuitemradio" value="all" tabindex="-1" aria-checked="false">Вся история</button>
+              </div>
+            </div>
+            <div class="cf-field cf-task-days" data-git-task-days hidden>
+              <label for="cf-git-task-days">Дней</label>
+              <input id="cf-git-task-days" type="number" min="1" step="1" value="90" required disabled
+                     aria-describedby="cf-git-task-days-error" title="Положительное целое количество суток до текущего момента">
+            </div>
+            <button type="button" class="cf-button" data-action="search-git-task" disabled><i data-lucide="search" aria-hidden="true"></i>Найти</button>
+            <button type="button" class="cf-button" data-action="cancel-git-task" hidden>Отменить</button>
+          </div>
+          <p class="cf-task-error" id="cf-git-task-days-error" role="status" hidden>Укажите целое количество дней больше нуля.</p>
+          <p class="cf-task-meta" data-git-task-hint>Откройте выбранную ветку для поиска по задаче.</p>
+          <div class="cf-task-meta" data-git-task-progress role="status" hidden>
+            <div data-git-task-scope></div><div data-git-task-scanned></div>
+          </div>
+          <div class="cf-git-task-result" data-git-task-result hidden>
+            <div class="cf-task-meta" role="status">
+              <div data-git-task-caption></div>
+              <div data-git-task-counts></div>
+            </div>
+            <div class="cf-git-task-actions">
+              <button type="button" class="cf-button" data-action="mark-git-task" title="Добавить все найденные по задаче объекты к отмеченным">Отметить найденные</button>
+              <button type="button" class="cf-button cf-quiet" data-action="clear-git-task">Сбросить отбор</button>
+            </div>
+          </div>
+        </div>
+        <div class="cf-filters">
+          <div class="cf-search">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input type="search" id="cf-search" aria-label="Поиск объектов" placeholder="Поиск по имени или типу объекта" autocomplete="off">
+          </div>
+          <label class="cf-selected-filter"><input id="cf-selected-only" type="checkbox"> Только выбранные</label>
+        </div>
+        <div class="cf-tree" aria-label="Объекты по типам">
+          <div class="cf-tree-header"><span>Тип и объект</span><span>Выбор</span></div>
+          <div data-groups></div>
+          <p class="cf-empty" data-empty-tree hidden>По этому запросу ничего не найдено.</p>
+        </div>
+        <div class="cf-pane-note">Отметка ставится флажком или пробелом.</div>
+      </section>
+
+      <section class="cf-pane cf-package" aria-labelledby="cf-package-title">
+        <div class="cf-panel-heading"><h2 id="cf-package-title"><i data-lucide="package" aria-hidden="true"></i>Состав комплекта</h2></div>
+        <div class="cf-tabs" role="tablist" aria-label="Состав комплекта">
+          <button type="button" role="tab" id="cf-whole-tab" aria-controls="cf-whole" aria-selected="true" data-tab="whole">Перенос целиком <span data-whole-count>0</span></button>
+          <button type="button" role="tab" id="cf-stubs-tab" aria-controls="cf-stubs" aria-selected="false" data-tab="stubs">Заглушки <span data-stub-count>0</span></button>
+        </div>
+        <div id="cf-whole" role="tabpanel" aria-labelledby="cf-whole-tab">
+          <table class="cf-data"><thead><tr><th scope="col">Объект</th><th scope="col">Тип</th></tr></thead><tbody data-whole-rows></tbody></table>
+          <p class="cf-empty" data-empty-whole hidden>Отметьте объекты в дереве.</p>
+        </div>
+        <div id="cf-stubs" role="tabpanel" aria-labelledby="cf-stubs-tab" hidden>
+          <table class="cf-data cf-stub-table" data-stub-table>
+            <colgroup><col><col><col class="cf-stub-choice-width"></colgroup>
+            <thead><tr><th scope="col">Заглушка</th><th scope="col">Требуется для</th><th scope="col" class="cf-stub-choice">В CF</th></tr></thead>
+          </table>
+          <p class="cf-empty" data-empty-stubs hidden>Нажмите «Предпросмотр», чтобы увидеть заглушки.</p>
+        </div>
+        <div class="cf-preview-note">
+          <i data-lucide="file-output" aria-hidden="true"></i><span>Выходные файлы</span><code>.cf</code><code>.merge-settings.xml</code>
+        </div>
+      </section>
+    </div>
+
+    <footer class="cf-footer">
+      <div class="cf-footer-actions">
+        <button type="button" class="cf-button" data-action="preview" disabled title="Показать объекты и причины включения заглушек"><i data-lucide="list-checks" aria-hidden="true"></i>Предпросмотр</button>
+        <input id="cf-task" type="text" aria-label="Номер задачи или комментарий" placeholder="Номер задачи или комментарий" title="Необязательное поле для имени папки комплекта" spellcheck="false">
+        <button type="button" class="cf-button cf-primary" data-action="build" disabled title="Собрать CF и сверить её обратной выгрузкой"><i data-lucide="package-check" aria-hidden="true"></i>Собрать CF</button>
+        <button type="button" class="cf-button cf-quiet" data-action="package" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Открыть комплект</button>
+        <button type="button" class="cf-button cf-quiet cf-journal-action" data-action="journal" disabled title="Показать журнал последней операции"><i data-lucide="file-text" aria-hidden="true"></i>Открыть журнал</button>
+      </div>
+      <div class="cf-status" aria-live="polite">
+        <span class="cf-status-main"><span class="cf-status-dot" aria-hidden="true"></span><span data-status>Открываю мастер…</span></span>
+        <span class="cf-secondary" data-platform-version></span>
+      </div>
+    </footer>
+  </section>
+  <dialog class="cf-dialog cf-preferences" id="cf-preferences" aria-labelledby="cf-settings-title">
+    <form method="dialog">
+      <div class="cf-preferences-header">
+        <h2 id="cf-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i>Настройки</h2>
+        <button type="submit" class="cf-button cf-close-settings" aria-label="Закрыть настройки">×</button>
+      </div>
+      <div class="cf-preferences-body">
+        <section class="cf-preferences-section" aria-label="Рабочие папки">
+          <h3>Рабочие папки</h3>
+          <div class="cf-fields">
+            <div class="cf-field cf-wide">
+              <label for="cf-source">Локальная XML-выгрузка</label>
+              <div class="cf-field-actions">
+                <input id="cf-source" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-source" title="Выбрать папку XML-выгрузки"><i data-lucide="folder-open" aria-hidden="true"></i>Папка</button>
+                <button type="button" class="cf-button" data-picker="cf-source" data-file="Configuration.xml" title="Выбрать Configuration.xml"><i data-lucide="file-code" aria-hidden="true"></i>Configuration.xml</button>
+              </div>
+            </div>
+            <div class="cf-field">
+              <label for="cf-result">Папка результата</label>
+              <div class="cf-field-actions">
+                <input id="cf-result" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-result" aria-label="Выбрать папку результата" title="Выбрать папку результата"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+            </div>
+            <div class="cf-field">
+              <label for="cf-logs">Папка журналов</label>
+              <div class="cf-field-actions">
+                <input id="cf-logs" type="text" spellcheck="false">
+                <button type="button" class="cf-button" data-picker="cf-logs" aria-label="Выбрать папку журналов" title="Выбрать папку журналов"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+            </div>
+            <div class="cf-field cf-wide">
+              <label for="cf-index">Папка индексов SQLite</label>
+              <div class="cf-field-actions">
+                <input id="cf-index" type="text" spellcheck="false" aria-describedby="cf-index-info">
+                <button type="button" class="cf-button" data-picker="cf-index" aria-label="Выбрать папку индексов" title="Выбрать папку индексов"><i data-lucide="folder-open" aria-hidden="true"></i></button>
+              </div>
+              <small id="cf-index-info" class="cf-secondary" aria-live="polite"></small>
+            </div>
+          </div>
+        </section>
+        <section class="cf-preferences-section" aria-label="Сборка">
+          <h3>Сборка</h3>
+          <div class="cf-field cf-platform-fields">
+            <div class="cf-choice-picker">
+              <label id="cf-build-label" for="cf-build-mode">Способ сборки</label>
+              <button type="button" id="cf-build-mode" class="cf-choice-toggle" aria-controls="cf-build-options" aria-haspopup="menu"
+                      aria-expanded="false" aria-labelledby="cf-build-label cf-build-value"
+                      title="В режиме «Авто» используется Конфигуратор 8.3.27.2214" disabled>
+                <span id="cf-build-value">Авто</span>
+              </button>
+              <div id="cf-build-options" class="cf-choice-menu" hidden role="menu" aria-labelledby="cf-build-label">
+                <button type="button" role="menuitemradio" value="auto" tabindex="-1" aria-checked="true">Авто</button>
+                <button type="button" role="menuitemradio" value="ibcmd" tabindex="-1" aria-checked="false">ibcmd</button>
+                <button type="button" role="menuitemradio" value="designer" tabindex="-1" aria-checked="false">Конфигуратор</button>
+              </div>
+            </div>
+            <div>
+              <label for="cf-platform">Платформа 1С</label>
+              <div class="cf-field-actions">
+                <input id="cf-platform" type="text" list="cf-platforms" spellcheck="false">
+                <datalist id="cf-platforms"></datalist>
+                <button type="button" class="cf-button" data-picker="cf-platform" aria-label="Выбрать исполняемый файл платформы"><i data-lucide="file-cog" aria-hidden="true"></i>Выбрать</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="cf-preferences-section cf-gitea-settings" aria-label="Подключение Git">
+          <div><h3>Git</h3><span class="cf-secondary" id="cf-git-location"></span></div>
+          <button type="button" class="cf-button" data-action="git-connect"><i data-lucide="workflow" aria-hidden="true"></i>Подключение Git…</button>
+        </section>
+      </div>
+      <div class="cf-preferences-footer"><button type="submit" class="cf-button cf-primary">Готово</button></div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog" aria-labelledby="cf-dialog-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-dialog-title"></h2>
+      <p data-dialog-text></p>
+      <p data-dialog-links hidden><a data-link="repository" href="#">Репозиторий сборщика</a> · <a data-link="licenses" href="#">Лицензии Qt</a> · <a data-link="icons" href="#">Лицензия значков</a></p>
+      <div class="cf-dialog-actions">
+        <button type="submit" class="cf-button">Закрыть</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog cf-journal" aria-labelledby="cf-journal-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-journal-title">Журнал работы</h2>
+      <p class="cf-secondary" data-journal-path></p>
+      <textarea readonly spellcheck="false" aria-label="Содержимое журнала" data-journal-text></textarea>
+      <div class="cf-dialog-actions"><button type="submit" class="cf-button">Закрыть</button></div>
+    </form>
+  </dialog>
+  <dialog class="cf-dialog cf-help" aria-labelledby="cf-help-title">
+    <form method="dialog" class="cf-dialog-body">
+      <h2 id="cf-help-title">Как собрать техническую CF</h2>
+      <ol>
+        <li>Мастер открывает сохранённую выгрузку при запуске. Путь к локальной папке или <code>Configuration.xml</code> можно выбрать в <strong>Настройках</strong>. Для открытия по введённому пути нажмите <strong>Открыть выгрузку</strong>.</li>
+        <li>Для Gitea или GitHub выберите <strong>Git</strong>. В окне <strong>Настройки → Подключение Git</strong> выберите API сервиса и введите персональный токен на чтение. Для GitHub.com используйте PAT только нужного репозитория с Contents: Read-only. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>
+        <li>Чтобы отобрать объекты по задаче, введите <strong>Номер задачи Git</strong>, выберите период и нажмите <strong>Найти</strong>. По умолчанию проверяются последние 90 дней. Для своего интервала выберите <strong>Указать дни…</strong> и введите целое число больше нуля; <strong>Вся история</strong> снимает ограничение дат. <strong>Отметить найденные</strong> добавляет найденные объекты к уже отмеченным. Комплект использует состояние объектов в открытой ревизии ветки.</li>
+        <li>GitHub загружает XML для индекса пакетами, без полного архива репозитория. Отбор задачи учитывает полный список путей; merge сравнивается с первым родителем. Токены Gitea и GitHub хранятся раздельно.</li>
+        <li>Подготовьте отдельный индекс ветки кнопкой <strong>Создать индекс</strong>. Мастер получает XML-описания и затем запрашивает файлы выбранных объектов по мере работы. При смене источника можно выбрать папку SQLite. Интервал проверки SHA задаётся в настройках подключения Git. Значение 0 выключает проверку.</li>
+        <li>В необязательное поле можно вписать номер задачи, дату или комментарий. Мастер использует текст в имени папки комплекта и заменяет недопустимые символы.</li>
+        <li>Для ускорения поиска зависимостей нажмите <strong>Создать индекс</strong>. У каждой XML-выгрузки свой файл SQLite. После обновления выгрузки нажмите <strong>Обновить индекс</strong>. Мастер пересчитывает записи изменившихся объектов.</li>
+        <li>Отметьте нужные объекты. Фильтр <strong>Только выбранные</strong> покажет все отмеченные объекты с учётом поиска. Нажмите <strong>Предпросмотр</strong>, чтобы увидеть зависимости и заглушки.</li>
+        <li>На вкладке <strong>Заглушки</strong> раскройте нужную группу, чтобы увидеть объекты и причины включения. Снять флажок можно, если сборщик нашёл ссылки на заглушку только в комментариях BSL. Обязательные заглушки отмечены словом «обяз.».</li>
+        <li>В <strong>Настройках</strong> укажите папку результата и способ сборки. В режиме <strong>Авто</strong> мастер выбирает Конфигуратор версии 8.3.27.2214. Для ручного выбора укажите <strong>ibcmd</strong> или <strong>Конфигуратор</strong> и соответствующий <code>ibcmd.exe</code> или <code>1cv8.exe</code> из папки <code>bin</code> установленной 1С.</li>
+        <li>Нажмите <strong>Собрать CF</strong>. Мастер подготовит XML и проверит CF обратной выгрузкой. Кнопка <strong>Открыть комплект</strong> откроет папку с CF и настройками объединения. Если поле задачи пустое, папка именуется по дате и времени.</li>
+      </ol>
+      <p>Git-индекс сохраняется между запусками. При прежних XML он готов и после смены SHA. Если XML изменились, мастер покажет «Нужно обновить»: обновление выполняется по кнопке только для изменившихся входов. Старому индексу потребуется однократная полная проверка. Прежний предпросмотр другой ревизии сбрасывается.</p>
+      <p>Кнопка <strong>Открыть журнал</strong> показывает журнал последней операции в отдельном окне мастера. Журнал доступен после создания или обновления индекса, предпросмотра и сборки. Кнопка <strong>Папка журналов</strong> над деревом открывает каталог всех журналов.</p>
+      <p>Если мастер показал ошибку или закрылся во время работы, откройте подпапку <strong>Ошибки</strong> и найдите файл по дате и времени запуска.</p>
+      <div class="cf-dialog-actions"><button type="submit" class="cf-button">Закрыть</button></div>
+    </form>
+  </dialog>
+</div>
+<script>// Lucide 0.468.0 · see LICENSE-lucide.txt
+const cfIcons = {
+  "info": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M12 16v-4\" /> <path d=\"M12 8h.01\" />",
+  "database": "<ellipse cx=\"12\" cy=\"5\" rx=\"9\" ry=\"3\" /> <path d=\"M3 5V19A9 3 0 0 0 21 19V5\" /> <path d=\"M3 12A9 3 0 0 0 21 12\" />",
+  "folder-open": "<path d=\"m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2\" />",
+  "file-code": "<path d=\"M10 12.5 8 15l2 2.5\" /> <path d=\"m14 12.5 2 2.5-2 2.5\" /> <path d=\"M14 2v4a2 2 0 0 0 2 2h4\" /> <path d=\"M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z\" />",
+  "folder-search": "<path d=\"M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1\" /> <path d=\"m21 21-1.9-1.9\" /> <circle cx=\"17\" cy=\"17\" r=\"3\" />",
+  "file-cog": "<path d=\"M14 2v4a2 2 0 0 0 2 2h4\" /> <path d=\"m3.2 12.9-.9-.4\" /> <path d=\"m3.2 15.1-.9.4\" /> <path d=\"M4.677 21.5a2 2 0 0 0 1.313.5H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v2.5\" /> <path d=\"m4.9 11.2-.4-.9\" /> <path d=\"m4.9 16.8-.4.9\" /> <path d=\"m7.5 10.3-.4.9\" /> <path d=\"m7.5 17.7-.4-.9\" /> <path d=\"m9.7 12.5-.9.4\" /> <path d=\"m9.7 15.5-.9-.4\" /> <circle cx=\"6\" cy=\"14\" r=\"3\" />",
+  "list-tree": "<path d=\"M21 12h-8\" /> <path d=\"M21 6H8\" /> <path d=\"M21 18h-8\" /> <path d=\"M3 6v4c0 1.1.9 2 2 2h3\" /> <path d=\"M3 10v6c0 1.1.9 2 2 2h3\" />",
+  "search": "<circle cx=\"11\" cy=\"11\" r=\"8\" /> <path d=\"m21 21-4.3-4.3\" />",
+  "code-xml": "<path d=\"m18 16 4-4-4-4\" /> <path d=\"m6 8-4 4 4 4\" /> <path d=\"m14.5 4-5 16\" />",
+  "files": "<path d=\"M20 7h-3a2 2 0 0 1-2-2V2\" /> <path d=\"M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z\" /> <path d=\"M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8\" />",
+  "book-open": "<path d=\"M12 7v14\" /> <path d=\"M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z\" />",
+  "settings-2": "<path d=\"M20 7h-9\" /> <path d=\"M14 17H5\" /> <circle cx=\"17\" cy=\"17\" r=\"3\" /> <circle cx=\"7\" cy=\"7\" r=\"3\" />",
+  "table-2": "<path d=\"M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18\" />",
+  "package": "<path d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\" /> <path d=\"M12 22V12\" /> <path d=\"m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7\" /> <path d=\"m7.5 4.27 9 5.15\" />",
+  "file-output": "<path d=\"M14 2v4a2 2 0 0 0 2 2h4\" /> <path d=\"M4 7V4a2 2 0 0 1 2-2 2 2 0 0 0-2 2\" /> <path d=\"M4.063 20.999a2 2 0 0 0 2 1L18 22a2 2 0 0 0 2-2V7l-5-5H6\" /> <path d=\"m5 11-3 3\" /> <path d=\"m5 17-3-3h10\" />",
+  "list-checks": "<path d=\"m3 17 2 2 4-4\" /> <path d=\"m3 7 2 2 4-4\" /> <path d=\"M13 6h8\" /> <path d=\"M13 12h8\" /> <path d=\"M13 18h8\" />",
+  "package-check": "<path d=\"m16 16 2 2 4-4\" /> <path d=\"M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14\" /> <path d=\"m7.5 4.27 9 5.15\" /> <polyline points=\"3.29 7 12 12 20.71 7\" /> <line x1=\"12\" x2=\"12\" y1=\"22\" y2=\"12\" />",
+  "file-text": "<path d=\"M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z\" /> <path d=\"M14 2v4a2 2 0 0 0 2 2h4\" /> <path d=\"M10 9H8\" /> <path d=\"M16 13H8\" /> <path d=\"M16 17H8\" />",
+  "layers": "<path d=\"M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z\" /> <path d=\"M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12\" /> <path d=\"M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17\" />",
+  "workflow": "<rect width=\"8\" height=\"8\" x=\"3\" y=\"3\" rx=\"2\" /> <path d=\"M7 11v4a2 2 0 0 0 2 2h4\" /> <rect width=\"8\" height=\"8\" x=\"13\" y=\"13\" rx=\"2\" />",
+  "list": "<path d=\"M3 12h.01\" /> <path d=\"M3 18h.01\" /> <path d=\"M3 6h.01\" /> <path d=\"M8 12h13\" /> <path d=\"M8 18h13\" /> <path d=\"M8 6h13\" />"
+};
+
+/* Desktop presentation. Package decisions and native operations belong to the Python bridge. */
+(() => {
+  "use strict";
+  const root = document.getElementById("cf-wizard-preview");
+  const one = selector => root.querySelector(selector);
+  const all = selector => root.querySelectorAll(selector);
+  const action = name => one('[data-action="' + name + '"]');
+  const fields = {
+    export: one("#cf-source"),
+    destination: one("#cf-result"),
+    logs: one("#cf-logs"),
+    platform_path: one("#cf-platform"),
+    task: one("#cf-task"),
+    index_directory: one("#cf-index"),
+  };
+  const buildMode = one("#cf-build-mode");
+  const buildMenu = one("#cf-build-options");
+  const gitBranch = one("#cf-git-branch");
+  const gitBranchMenu = one("#cf-git-branch-options");
+  const gitTaskKey = one("#cf-git-task-key");
+  const gitTaskPeriod = one("#cf-git-task-period");
+  const gitTaskPeriodMenu = one("#cf-git-task-period-options");
+  const gitTaskDays = one("#cf-git-task-days");
+  const groupIcons = {
+    Subsystem: "layers", CommonModule: "code-xml", Document: "files",
+    Catalog: "book-open", DataProcessor: "settings-2", InformationRegister: "table-2",
+    BusinessProcess: "workflow",
+  };
+  const search = one("#cf-search");
+  const selectedOnly = one("#cf-selected-only");
+  const groups = one("[data-groups]");
+  const notice = one('dialog[aria-labelledby="cf-dialog-title"]');
+  const journal = one(".cf-journal");
+  const help = one(".cf-help");
+  const preferences = one("#cf-preferences");
+  const sourceButtons = all("[data-source-mode]");
+  let bridge, state, queryTimer, focusedKey;
+  let generation = 0;
+  let selected = new Map();
+  const pendingSelection = new Map();
+  const expanded = new Set();
+
+  function icon(name) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [key, value] of Object.entries({
+      viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
+      "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true",
+      "data-lucide": name,
+    })) svg.setAttribute(key, value);
+    svg.innerHTML = cfIcons[name];
+    return svg;
+  }
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function checkbox(label) {
+    const wrapper = element("label", "", "cf-checkbox");
+    const check = element("input");
+    check.type = "checkbox";
+    check.setAttribute("aria-label", label);
+    const indicator = element("span", "", "cf-check-indicator");
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.append(element("span", "", "cf-check-tick"));
+    wrapper.append(check, indicator);
+    return {wrapper, check};
+  }
+
+  function updateCheck(check, checked, disabled) {
+    if (check.checked !== checked) check.checked = checked;
+    check.disabled = disabled;
+    // Paint the mark in the same render pass as the selection summary.
+    check.nextElementSibling.classList.toggle("cf-checked", checked);
+  }
+
+  function setTab(name) {
+    for (const tab of all("[data-tab]")) {
+      const active = tab.dataset.tab === name;
+      tab.setAttribute("aria-selected", active);
+      one("#" + tab.getAttribute("aria-controls")).hidden = !active;
+    }
+  }
+
+  function renderWhole() {
+    const rows = [...selected.values()].map(object => {
+      const row = element("tr");
+      row.append(element("td", object.name), element("td", object.type));
+      return row;
+    });
+    one("[data-whole-rows]").replaceChildren(...rows);
+    one("[data-empty-whole]").hidden = !!rows.length;
+    one("[data-whole-count]").textContent = rows.length;
+  }
+
+  function renderSelection() {
+    selected = new Map(state.selected.map(object => [object.key, object]));
+    for (const {object, checked} of pendingSelection.values()) {
+      if (checked) selected.set(object.key, object);
+      else selected.delete(object.key);
+    }
+    const pending = pendingSelection.size > 0;
+    action("preview").disabled = pending || !state.canPreview;
+    action("build").disabled = pending || !state.canBuild;
+    action("package").disabled = pending || !state.canOpenPackage;
+    one("[data-selected-count]").textContent = "Отмечено " + selected.size;
+    renderWhole();
+    updateChecks();
+  }
+
+  function updateChecks() {
+    for (const check of all("[data-object-check]")) {
+      updateCheck(check, selected.has(check.dataset.objectCheck), state.busy);
+    }
+    const excluded = new Set(state.excluded);
+    for (const check of all("[data-stub-toggle]")) {
+      const included = !excluded.has(check.dataset.stubToggle);
+      const disabled = check.dataset.required === "true" || !state.canMarkStubs || pendingSelection.size > 0;
+      updateCheck(check, included, disabled);
+      check.closest("tr").classList.toggle("cf-stub-omitted", !included);
+    }
+    const count = state.stubTotal - excluded.size;
+    one("[data-stub-count]").textContent = excluded.size ? count + "/" + state.stubTotal : count;
+  }
+
+  function renderStubs(stubs) {
+    const table = one("[data-stub-table]");
+    for (const body of [...table.tBodies]) body.remove();
+    for (const group of stubs) {
+      const body = table.createTBody();
+      body.classList.add("cf-stub-branch", "cf-stub-collapsed");
+      const heading = body.insertRow();
+      heading.className = "cf-stub-group";
+      const label = element("th");
+      label.scope = "rowgroup";
+      label.colSpan = 3;
+      const toggle = element("button", "", "cf-stub-group-toggle");
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", "false");
+      const arrow = element("span", "▸", "cf-stub-arrow");
+      arrow.setAttribute("aria-hidden", "true");
+      toggle.append(arrow, icon(groupIcons[group.kind] || "list"), document.createTextNode(group.label),
+                    element("span", String(group.rows.length), "cf-group-count"));
+      toggle.addEventListener("click", () => {
+        const collapsed = body.classList.toggle("cf-stub-collapsed");
+        toggle.setAttribute("aria-expanded", String(!collapsed));
+      });
+      label.append(toggle);
+      heading.append(label);
+      for (const stub of group.rows) {
+        const row = body.insertRow();
+        const name = row.insertCell();
+        name.append(element("span", stub.name), element("span", stub.type, "cf-type"));
+        const reason = row.insertCell();
+        reason.textContent = stub.reason;
+        reason.title = stub.owners;
+        const choice = row.insertCell();
+        choice.className = "cf-stub-choice";
+        const {wrapper, check} = checkbox("Включить заглушку " + stub.name);
+        check.dataset.stubToggle = stub.key;
+        check.dataset.required = stub.required;
+        check.title = stub.required ? "Обязательная ссылка" : "Ссылка найдена только в комментариях";
+        check.addEventListener("change", () => {
+          updateCheck(check, check.checked, check.disabled);
+          bridge.markStub(stub.key, check.checked);
+        });
+        choice.append(wrapper);
+        if (stub.required) choice.append(element("span", "обяз.", "cf-stub-required"));
+      }
+    }
+    one("[data-empty-stubs]").hidden = !!stubs.length;
+    if (stubs.length) setTab("stubs");
+    if (state) updateChecks();
+  }
+
+  function objectRow(object) {
+    const row = element("div", "", "cf-object");
+    const name = element("button", object.name, "cf-object-name");
+    name.type = "button";
+    name.title = object.type + "." + object.name;
+    const {wrapper, check} = checkbox("Отметить " + object.name);
+    check.dataset.objectCheck = object.key;
+    updateCheck(check, selected.has(object.key), state.busy);
+    row.classList.toggle("cf-focused", object.key === focusedKey);
+    const focus = () => {
+      one(".cf-object.cf-focused")?.classList.remove("cf-focused");
+      focusedKey = object.key;
+      row.classList.add("cf-focused");
+    };
+    name.addEventListener("click", focus);
+    name.addEventListener("keydown", event => {
+      if (event.key !== " " || event.repeat) return;
+      event.preventDefault();
+      if (!state.busy) check.click();
+    });
+    check.addEventListener("change", () => {
+      focus();
+      const intent = {object, checked: check.checked};
+      pendingSelection.set(object.key, intent);
+      renderSelection();
+      bridge.markObject(object.key, intent.checked, confirmed => {
+        if (pendingSelection.get(object.key) === intent) pendingSelection.delete(object.key);
+        renderState(confirmed);
+      });
+    });
+    row.append(name, wrapper);
+    return row;
+  }
+
+  function groupSection(group, query, autoOpen, onlySelected) {
+    const details = element("details");
+    details.dataset.kind = group.kind;
+    const summary = element("summary");
+    summary.append(icon(groupIcons[group.kind] || "list"), document.createTextNode(group.label),
+                   element("span", String(group.count), "cf-group-count"));
+    const rows = element("div");
+    const more = element("button", "Показать ещё", "cf-button cf-more");
+    more.type = "button";
+    more.hidden = true;
+    details.append(summary, rows, more);
+    let offset = 0;
+    let loading = false;
+    function load() {
+      if (loading || offset >= group.count) return;
+      loading = true;
+      more.disabled = true;
+      bridge.rows(group.kind, query, offset, onlySelected, objects => {
+        loading = false;
+        if (!details.isConnected) return;
+        rows.append(...objects.map(objectRow));
+        offset += objects.length;
+        more.hidden = offset >= group.count || !objects.length;
+        more.disabled = false;
+      });
+    }
+    more.addEventListener("click", load);
+    details.addEventListener("toggle", () => {
+      if (!query && !onlySelected && !state.gitTaskResult) {
+        if (details.open) expanded.add(group.kind);
+        else expanded.delete(group.kind);
+      }
+      if (details.open && offset === 0) load();
+    });
+    details.open = autoOpen || !query && expanded.has(group.kind);
+    return details;
+  }
+
+  function renderGroups() {
+    const query = search.value.trim();
+    const onlySelected = selectedOnly.checked;
+    const request = ++generation;
+    bridge.groups(query, onlySelected, items => {
+      if (request !== generation) return;
+      const found = items.reduce((sum, group) => sum + group.count, 0);
+      one("[data-selected-count]").title = "Найдено " + found;
+      const autoOpen = found <= 800 && (onlySelected || !!query || !!state.gitTaskResult);
+      groups.replaceChildren(...items.map(group => groupSection(group, query, autoOpen, onlySelected)));
+      const empty = one("[data-empty-tree]");
+      empty.hidden = !!items.length;
+      empty.textContent = !state.configuration ? "Откройте XML-выгрузку."
+        : onlySelected && !state.selected.length ? "Объекты ещё не отмечены." : "По этому запросу ничего не найдено.";
+    });
+  }
+
+  function setChoiceMenu(trigger, menu, open) {
+    menu.hidden = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+    if (open) (menu.querySelector('[aria-checked="true"]') || menu.firstElementChild)?.focus();
+  }
+
+  function renderChoice(menu, label, value) {
+    let caption = value;
+    for (const option of menu.children) {
+      const checked = option.value === value;
+      option.setAttribute("aria-checked", String(checked));
+      if (checked) caption = option.textContent;
+    }
+    label.textContent = caption;
+  }
+
+  function bindChoiceMenu(trigger, menu, choose) {
+    const setOpen = open => setChoiceMenu(trigger, menu, open);
+    trigger.addEventListener("click", () => setOpen(menu.hidden));
+    trigger.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (menu.hidden) setOpen(true);
+      }
+    });
+    document.addEventListener("pointerdown", event => {
+      if (!menu.hidden && !trigger.contains(event.target) && !menu.contains(event.target)) setOpen(false);
+    });
+    menu.addEventListener("pointerover", event => {
+      event.target.closest("button")?.focus({preventScroll: true});
+    });
+    menu.addEventListener("keydown", event => {
+      const options = [...menu.children];
+      const count = options.length;
+      const focused = options.indexOf(document.activeElement);
+      const next = {
+        ArrowDown: (focused + 1) % count,
+        ArrowUp: (focused + count - 1) % count,
+        Home: 0,
+        End: count - 1,
+      }[event.key];
+      if (next !== undefined && options[next]) {
+        event.preventDefault();
+        options[next].focus();
+      } else if (event.key === "Escape" || event.key === "Tab") {
+        if (event.key === "Escape") event.preventDefault();
+        setOpen(false);
+        trigger.focus();
+      }
+    });
+    menu.addEventListener("click", event => {
+      const option = event.target.closest("button");
+      if (!option) return;
+      setOpen(false);
+      trigger.focus();
+      choose(option.value);
+    });
+  }
+
+  function updateGitTaskButton() {
+    const custom = gitTaskPeriod.value === "custom";
+    const valid = !custom || (Number.isSafeInteger(gitTaskDays.valueAsNumber) && gitTaskDays.valueAsNumber > 0);
+    one("[data-git-task-days]").hidden = !custom;
+    gitTaskDays.disabled = !custom || !state?.gitTaskReady || state.busy;
+    gitTaskDays.setAttribute("aria-invalid", String(!valid));
+    one("#cf-git-task-days-error").hidden = valid;
+    action("search-git-task").disabled = !state?.gitTaskReady || state.busy || !gitTaskKey.value.trim() || !valid;
+  }
+
+  function renderGitTask(started) {
+    const scope = state.gitTaskScope;
+    const result = state.gitTaskResult;
+    one("[data-git-task]").hidden = state.sourceMode !== "git";
+    one("[data-git-task-hint]").hidden = state.gitTaskReady;
+    gitTaskKey.disabled = gitTaskPeriod.disabled = state.busy || !state.gitTaskReady;
+    if ((gitTaskPeriod.disabled || state.sourceMode !== "git") && !gitTaskPeriodMenu.hidden) {
+      setChoiceMenu(gitTaskPeriod, gitTaskPeriodMenu, false);
+    }
+    updateGitTaskButton();
+    action("cancel-git-task").hidden = !scope;
+    action("cancel-git-task").disabled = state.gitTaskCancelling;
+    one("[data-git-task-progress]").hidden = !scope;
+    one("[data-git-task-scope]").textContent = scope;
+    if (started) one("[data-git-task-scanned]").textContent = "Читаю историю коммитов…";
+    one("[data-git-task-result]").hidden = !result;
+    if (result) {
+      one("[data-git-task-caption]").textContent = result.scope;
+      const counts = ["Коммитов " + result.commits, "Файлов " + result.files, "Объектов " + result.objects];
+      if (result.unmapped) counts.push("Путей без объекта " + result.unmapped);
+      one("[data-git-task-counts]").textContent = counts.join(" · ");
+      action("mark-git-task").disabled = state.busy || !result.canMark;
+      action("clear-git-task").disabled = state.busy;
+    }
+  }
+
+  function findGitTask() {
+    if (!action("search-git-task").disabled) {
+      const days = gitTaskPeriod.value === "custom" ? String(gitTaskDays.valueAsNumber) : "90";
+      bridge.searchGitTask(gitTaskKey.value, gitTaskPeriod.value === "all", days);
+    }
+  }
+
+  function renderState(next) {
+    const catalogueChanged = !state || state.catalogRevision !== next.catalogRevision;
+    const taskFilterChanged = !state || state.gitTaskRevision !== next.gitTaskRevision
+      || Boolean(state.gitTaskResult) !== Boolean(next.gitTaskResult);
+    const gitTaskStarted = next.gitTaskScope && state?.gitTaskScope !== next.gitTaskScope;
+    const selectionChanged = !state || state.selected.length !== next.selected.length
+      || next.selected.some((object, index) => object.key !== state.selected[index].key);
+    if (!state || state.values.build_mode !== next.values.build_mode) {
+      renderChoice(buildMenu, one("#cf-build-value"), next.values.build_mode);
+      one("#cf-platforms").replaceChildren(...next.platforms.map(path => {
+        const option = element("option");
+        option.value = path;
+        return option;
+      }));
+    }
+    const branchesChanged = !state || state.gitBranches.length !== next.gitBranches.length
+      || next.gitBranches.some((branch, index) => branch !== state.gitBranches[index]);
+    if (branchesChanged) {
+      setChoiceMenu(gitBranch, gitBranchMenu, false);
+      gitBranchMenu.replaceChildren(...next.gitBranches.map(name => {
+        const option = element("button", name);
+        option.type = "button";
+        option.value = name;
+        option.tabIndex = -1;
+        option.setAttribute("role", "menuitemradio");
+        return option;
+      }));
+    }
+    if (branchesChanged || state.gitBranch !== next.gitBranch) {
+      renderChoice(gitBranchMenu, one("#cf-git-branch-value"), next.gitBranch);
+      gitBranch.title = next.gitBranch;
+    }
+    state = next;
+    renderGitTask(gitTaskStarted);
+    if (catalogueChanged) pendingSelection.clear();
+    for (const [key, input] of Object.entries(fields)) {
+      if (document.activeElement !== input) input.value = state.values[key];
+      if (key !== "task") input.title = state.values[key];
+      input.disabled = state.busy;
+    }
+    buildMode.disabled = state.busy;
+    if (state.busy && !buildMenu.hidden) setChoiceMenu(buildMode, buildMenu, false);
+    for (const button of all("[data-picker]")) button.disabled = state.busy;
+    const automatic = state.values.build_mode === "auto";
+    fields.platform_path.readOnly = automatic;
+    fields.platform_path.placeholder = state.platformPlaceholder;
+    fields.platform_path.title = state.values.platform_path || state.platformPlaceholder;
+    const platformPicker = one("[data-picker=cf-platform]");
+    platformPicker.disabled = state.busy || automatic;
+    platformPicker.title = automatic ? "Выберите способ сборки для ручного указания пути" : state.platformPlaceholder;
+    const gitMode = state.sourceMode === "git";
+    for (const button of sourceButtons) {
+      button.setAttribute("aria-pressed", String(button.dataset.sourceMode === state.sourceMode));
+      button.disabled = state.busy;
+    }
+    one("#cf-git-source").hidden = !gitMode;
+    gitBranch.disabled = state.busy;
+    if ((state.busy || !gitMode) && !gitBranchMenu.hidden) setChoiceMenu(gitBranch, gitBranchMenu, false);
+    for (const name of ["open-source", "settings", "git-connect"]) action(name).disabled = state.busy;
+    one("[data-open-source]").textContent = gitMode ? state.gitOpenText : "Открыть выгрузку";
+    action("open-source").title = gitMode ? state.gitOpenText : state.values.export || "Выбрать папку XML-выгрузки";
+    one("#cf-git-location").textContent = state.gitLocation;
+    const poll = one("[data-git-poll]");
+    poll.textContent = state.gitPollInfo;
+    poll.hidden = !gitMode || !state.gitPollInfo;
+    action("logs").disabled = state.busy;
+    action("refresh-index").disabled = !state.canRefreshIndex;
+    one("[data-index-command]").textContent = state.indexExists ? "Обновить индекс" : "Создать индекс";
+    one("#cf-index-info").textContent = state.indexInfo;
+    action("journal").disabled = !state.canOpenJournal;
+    search.disabled = state.busy;
+    selectedOnly.disabled = state.busy;
+    one("[data-source-summary]").hidden = !state.configuration;
+    one("[data-config-name]").textContent = state.configuration;
+    one("[data-active-source]").textContent = state.activeSource;
+    const indexStatus = one("[data-index-status]");
+    indexStatus.title = state.indexInfo;
+    indexStatus.classList.toggle("cf-index-needed", !state.indexExists);
+    one("[data-index-label]").textContent = state.indexExists ? "Индекс готов"
+      : state.activeGit ? "Нужен индекс" : "Индекс ещё не создан";
+    one("[data-platform-version]").textContent = state.platformLabel;
+    one("[data-status]").textContent = state.status;
+    const dot = one(".cf-status-main .cf-status-dot");
+    dot.classList.toggle("cf-waiting", ["idle", "busy"].includes(state.statusKind));
+    dot.classList.toggle("cf-error", state.statusKind === "error");
+    renderSelection();
+    if (catalogueChanged) {
+      expanded.clear();
+      focusedKey = undefined;
+    }
+    if (catalogueChanged || taskFilterChanged || selectedOnly.checked && selectionChanged) renderGroups();
+  }
+
+  function showNotice(title, text) {
+    one("#cf-dialog-title").textContent = title;
+    one("[data-dialog-text]").textContent = text;
+    one("[data-dialog-links]").hidden = title !== "О программе";
+    if (!notice.open) notice.showModal();
+  }
+
+  function showPreferences() {
+    if (!preferences.open) preferences.showModal();
+  }
+
+  function connectGit() {
+    preferences.close();
+    bridge.command("git-connect", () => {
+      const reopen = () => {
+        showPreferences();
+        action("git-connect").focus();
+      };
+      if (notice.open) notice.addEventListener("close", reopen, {once: true});
+      else reopen();
+    });
+  }
+
+  function showJournal(path, text) {
+    one("[data-journal-path]").textContent = path;
+    const content = one("[data-journal-text]");
+    content.value = text;
+    if (!journal.open) journal.showModal();
+    content.setSelectionRange(0, 0);
+    content.scrollTop = 0;
+    content.scrollLeft = 0;
+  }
+
+  for (const placeholder of all("i[data-lucide]")) placeholder.replaceWith(icon(placeholder.dataset.lucide));
+  const showHelp = () => { if (!help.open) help.showModal(); };
+  action("help").addEventListener("click", showHelp);
+  document.addEventListener("keydown", event => {
+    if (event.key === "F1") {
+      event.preventDefault();
+      showHelp();
+    }
+  });
+  for (const tab of all("[data-tab]")) tab.addEventListener("click", () => setTab(tab.dataset.tab));
+  if (typeof QWebChannel === "undefined" || typeof qt === "undefined") {
+    one("[data-status]").textContent = "Не удалось подключить окно к мастеру.";
+    return;
+  }
+
+  new QWebChannel(qt.webChannelTransport, channel => {
+    bridge = channel.objects.wizard;
+    bridge.changed.connect(renderState);
+    bridge.gitTaskProgress.connect(count => {
+      if (state?.gitTaskScope && !state.gitTaskCancelling) {
+        one("[data-git-task-scanned]").textContent = "Просмотрено коммитов " + count;
+      }
+    });
+    for (const input of [gitTaskKey, gitTaskDays]) {
+      input.addEventListener("input", updateGitTaskButton);
+      input.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          findGitTask();
+        }
+      });
+    }
+    bridge.stubsChanged.connect(renderStubs);
+    bridge.journalOpened.connect(showJournal);
+    bridge.notice.connect(showNotice);
+    for (const [key, input] of Object.entries(fields)) {
+      input.addEventListener(key === "logs" ? "change" : "input", () => bridge.editField(key, input.value));
+    }
+    bindChoiceMenu(buildMode, buildMenu, value => bridge.editField("build_mode", value));
+    bindChoiceMenu(gitBranch, gitBranchMenu, value => bridge.setGitBranch(value));
+    bindChoiceMenu(gitTaskPeriod, gitTaskPeriodMenu, value => {
+      gitTaskPeriod.value = value;
+      renderChoice(gitTaskPeriodMenu, one("#cf-git-task-period-value"), value);
+      updateGitTaskButton();
+    });
+    for (const button of sourceButtons) {
+      button.addEventListener("click", () => bridge.setSourceMode(button.dataset.sourceMode));
+    }
+    fields.export.addEventListener("keydown", event => {
+      if (event.key === "Enter" && state?.sourceMode === "local") {
+        event.preventDefault();
+        bridge.command("open-source");
+      }
+    });
+    for (const button of all("[data-action]")) {
+      const name = button.dataset.action;
+      if (name === "help") continue;
+      const handler = name === "settings" ? showPreferences
+        : name === "git-connect" ? connectGit
+        : name === "search-git-task" ? findGitTask : () => bridge.command(name);
+      button.addEventListener("click", handler);
+    }
+    for (const button of all("[data-picker]")) {
+      button.addEventListener("click", () => bridge.pickPath(button.dataset.file || button.dataset.picker));
+    }
+    for (const link of all("[data-link]")) {
+      link.addEventListener("click", event => {
+        event.preventDefault();
+        bridge.openLink(link.dataset.link);
+      });
+    }
+    search.addEventListener("input", () => {
+      clearTimeout(queryTimer);
+      queryTimer = setTimeout(renderGroups, 90);
+    });
+    selectedOnly.addEventListener("change", renderGroups);
+    bridge.snapshot(initial => {
+      renderState(initial);
+      if (initial.sourceMode === "local" && initial.values.export.trim() && !initial.configuration && !initial.busy) {
+        bridge.command("open-source");
+      }
+    });
+  });
+})();
+</script></body>
+</html>

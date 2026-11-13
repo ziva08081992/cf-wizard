@@ -12,7 +12,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT=Path(__file__).resolve().parents[2]
 SOURCE=ROOT/'docs/user-guide.md'
-OUTPUT=ROOT/'docs/CF-Wizard-0.7.2-User-Guide-RU.docx'
+OUTPUT=ROOT/'docs/CF-Wizard-0.7.3-User-Guide-RU.docx'
 
 def rich(paragraph,text):
     token=re.compile(r'(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*)')
@@ -74,7 +74,7 @@ def build():
         doc.styles[name].font.size=Pt(size);doc.styles[name].font.bold=True;doc.styles[name].paragraph_format.space_before=Pt(13);doc.styles[name].paragraph_format.keep_with_next=True
     doc.styles['Caption'].font.size=Pt(9.5);doc.styles['Caption'].font.color.rgb=RGBColor.from_string('4A4A4A')
     footer=section.footer.paragraphs[0];footer.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=footer.add_run('CF Wizard 0.7.2   |   ');r.font.size=Pt(9)
+    r=footer.add_run('CF Wizard 0.7.3   |   ');r.font.size=Pt(9)
     field=OxmlElement('w:fldSimple');field.set(qn('w:instr'),'PAGE');footer._p.append(field)
     lines=SOURCE.read_text(encoding='utf-8-sig').splitlines();i=0;num=None
     while i<len(lines):
@@ -99,7 +99,7 @@ def build():
         elif line.startswith('- '):rich(doc.add_paragraph(style='List Bullet'),line[2:])
         else:rich(doc.add_paragraph(),line)
         i+=1
-    doc.core_properties.title='CF Wizard Руководство пользователя';doc.core_properties.subject='Использование версии 0.7.2';doc.core_properties.author='CF Wizard';doc.core_properties.last_modified_by='CF Wizard';doc.core_properties.keywords='1С CF Git Gitea GitHub инструкция'
+    doc.core_properties.title='CF Wizard Руководство пользователя';doc.core_properties.subject='Использование версии 0.7.3';doc.core_properties.author='CF Wizard';doc.core_properties.last_modified_by='CF Wizard';doc.core_properties.keywords='1С CF Git Gitea GitHub инструкция'
     doc.save(OUTPUT)
     print(OUTPUT);print('Paragraphs:',len(doc.paragraphs),'Tables:',len(doc.tables),'Images:',len(doc.inline_shapes))
 if __name__=='__main__':build()

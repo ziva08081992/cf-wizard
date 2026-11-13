@@ -191,49 +191,8 @@ def update_index(path: Path, root: Path, identity: str, descriptors: dict[str, s
 
 
 def update_git_index(path, source, descriptors, helper, helper_sha, source_check):
-    """Build the new index privately, optionally preserving previously checked facts."""
-    git = source.git
-
-    def stamp():
-        try:
-            info = path.stat()
-            return info.st_size, info.st_mtime_ns, info.st_ctime_ns
-        except FileNotFoundError:
-            return None
-
-    before = stamp()
-    with TemporaryDirectory(prefix=".cf-git-index-", dir=path.parent) as folder:
-        draft = Path(folder) / "index.sqlite3"
-        seeds = [(path, None)]
-        if git.seed_root is not None and git.seed_index is not None:
-            seeds.append((git.seed_index, os.path.normcase(str(git.seed_root))))
-        for candidate, seed_identity in seeds:
-            if not candidate.is_file():
-                continue
-            try:
-                with closing(_readonly(candidate)) as db:
-                    db.execute("PRAGMA trusted_schema=OFF")
-                    header = _header(db)
-                    old = header.get("source", "")
-                    same_branch = Path(old).parent.parent == source.root.parent.parent
-                    if (header.get("schema") != SCHEMA_VERSION or header.get("helper") != helper_sha
-                            or (old != seed_identity if seed_identity is not None else not same_branch)
-                            or db.execute("PRAGMA quick_check").fetchone()[0] != "ok"):
-                        continue
-                    with closing(sqlite3.connect(draft)) as copy:
-                        db.backup(copy)
-                        copy.execute("PRAGMA trusted_schema=OFF")
-                        copy.execute("UPDATE metadata SET value=? WHERE key='source'", (source.identity,))
-                        copy.commit()
-                break
-            except (OSError, ValueError, sqlite3.Error):
-                draft.unlink(missing_ok=True)
-        counts = update_index(draft, source.root, source.identity, descriptors, helper, helper_sha,
-                              source_check, verify_file=git.verify)
-        if stamp() != before:
-            raise ValueError("Индекс изменился в другом окне. Повторите обновление.")
-        draft.replace(path)
-        return counts
+    from .git_index_store import update
+    return update(path, source, descriptors, helper, helper_sha, source_check)
 
 
 class IndexReader:
@@ -248,16 +207,32 @@ class IndexReader:
         self.hits = Counter()
 
     @classmethod
-    def open(cls, path: Path, identity: str, helper_sha: str, *, pinned=False):
+    def open(cls, path: Path, identity: str, helper_sha: str, *, pinned=False, inputs=None, context=None, strict=False):
         db = None
         try:
             db = _readonly(path)
             db.execute("PRAGMA trusted_schema=OFF")
             db.execute("BEGIN")
-            if _header(db) == {"schema": SCHEMA_VERSION, "source": identity, "helper": helper_sha}:
+            header = _header(db)
+            valid = header == {"schema": SCHEMA_VERSION, "source": identity, "helper": helper_sha}
+            expected = inputs.context if inputs is not None else context
+            if expected is not None and set(expected) != {"git_manifest", "git_source", "git_fingerprint"}:
+                raise ValueError("Некорректный контекст индекса Git.")
+            if expected is not None and "git_manifest" in header:
+                try:
+                    from .git_index_store import read_manifest
+                except ImportError:
+                    from git_index_store import read_manifest
+                valid = (header.get("schema") == SCHEMA_VERSION and header.get("helper") == helper_sha
+                         and all(header.get(key) == value for key, value in expected.items())
+                         and read_manifest(db, header).fingerprint == expected["git_fingerprint"])
+            if valid:
                 return cls(db, pinned=pinned)
-        except (OSError, ValueError, sqlite3.Error):
-            pass
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            if strict:
+                if db is not None:
+                    db.close()
+                raise ValueError("Не удалось проверить SQLite. Обновите индекс по кнопке. " + str(exc)) from exc
         if db is not None:
             db.close()
         return None

@@ -207,7 +207,7 @@ class DesignerExport:
         objects = tuple(sorted(key for key in descriptors if not key.startswith("Language.")))
         if not objects:
             raise ValueError("В выгрузке нет объектов для переноса.")
-        return ExportCatalog(root, name, objects), descriptors
+        return ExportCatalog(root, name, objects, descriptors=tuple(sorted(descriptors.items()))), descriptors
 
     def objects_for_paths(self, source: ExportCatalog, paths: set[str]) -> tuple[frozenset[str], int]:
         current, descriptors = self.describe(source.root)
@@ -251,11 +251,13 @@ class DesignerDependencyIndexes:
                   if git is not None else f"локальная XML-выгрузка {source.root}")
         write_journal(log, f"Подготовка индекса зависимостей для {source.configuration}. Источник {origin}.")
         try:
-            configuration = source.root / "Configuration.xml"
-            original = _sha(configuration)
-            current, descriptors = self.reader.describe(source.root)
             if git is not None:
-                current = current.with_git(git)
+                inputs = git.index_inputs
+                current, descriptors = source, dict(source.descriptors)
+            else:
+                configuration = source.root / "Configuration.xml"
+                original = _sha(configuration)
+                current, descriptors = self.reader.describe(source.root)
             path = self.path_for(current, directory)
             action = "Обновление" if path.is_file() else "Создание"
             write_journal(log, f"{action} индекса {path}.")
@@ -263,13 +265,15 @@ class DesignerDependencyIndexes:
             helper = runpy.run_path(str(self.reader.helper))
 
             def source_check():
-                if _sha(configuration) != original:
+                if git is not None:
+                    if git.index_inputs != inputs or git.revision != inputs.revision:
+                        raise ValueError("Открытая ревизия Git изменилась. Откройте ветку заново.")
+                elif _sha(configuration) != original:
                     raise ValueError("Состав XML-выгрузки изменился во время обновления индекса. Повторите операцию.")
                 self.reader.verify_helper()
 
             if git is not None:
                 write_journal(log, f"Подготовка XML-описаний из {getattr(source.git.client, 'label', 'Gitea')} и кэша.")
-                git.metadata(descriptors)
             path.parent.mkdir(parents=True, exist_ok=True)
             write_journal(log, f"Обработка XML и запись SQLite. Объектов в каталоге {len(descriptors)}.")
             if git is not None:
@@ -283,6 +287,12 @@ class DesignerDependencyIndexes:
         update = IndexUpdate(current, path, counts["added"], counts["changed"], counts["removed"], counts["unchanged"], log)
         write_journal(log, f"Индекс готов за {perf_counter() - started:.2f} с. Добавлено {update.added}, "
                           f"изменено {update.changed}, удалено {update.removed}, переиспользовано {update.unchanged}.")
+        if git is not None:
+            write_journal(log, f"Входов {counts['inputs']}, пропущено неизменных XML {counts['reused_inputs']}, "
+                              f"обработано XML {counts['xml_reads']}, "
+                              f"извлечено фактов {counts['facts']}.")
+            write_journal(log, f"XML-входы: добавлено {counts['input_added']}, изменено {counts['input_changed']}, "
+                              f"удалено {counts['input_removed']}. Счётчик обработки не включает повторные чтения кэша и проверки Git hash.")
         return update
 
 
@@ -386,11 +396,13 @@ class TechnicalPackage:
             if current != source:
                 raise ValueError("Состав XML-выгрузки изменился. Откройте её заново.")
             if source.git is not None:
-                checked = IndexReader.open(index, source.identity, HELPER_SHA256) if index and index.is_file() else None
+                checked = IndexReader.open(index, source.identity, HELPER_SHA256,
+                                           inputs=source.git.index_inputs) if index and index.is_file() else None
                 if checked is None:
                     raise ValueError("Создайте или обновите индекс выбранной ревизии Git.")
                 checked.close()
-            before = descriptor_inventory(source.root, descriptors)
+            before = (source.git.index_inputs.inventory() if source.git is not None
+                      else descriptor_inventory(source.root, descriptors))
             plan = resolve_dependencies(self.reader.helper, source.root, selected,
                                         index if index and index.is_file() else None, source.identity,
                                          git=source.git)
@@ -403,7 +415,9 @@ class TechnicalPackage:
                 raise ValueError("Сборщик вернул неожиданные файлы выбранных объектов.")
             hashes = {rel: _sha(source.git.ensure(rel) if source.git is not None else source.root / rel)
                       for rel in files}
-            if descriptor_inventory(source.root, descriptors) != before or _source_markers(source.root) != markers:
+            after = (source.git.index_inputs.inventory() if source.git is not None
+                     else descriptor_inventory(source.root, descriptors))
+            if after != before or _source_markers(source.root) != markers:
                 raise ValueError("XML-выгрузка изменилась во время расчёта. Повторите предпросмотр.")
             composition = _composition(selected, descriptors, result["stubs"], result["causes"])
             warnings = tuple(f"Проверьте коды предопределённых элементов: {item['object']}"
@@ -441,7 +455,7 @@ class TechnicalPackage:
         markers = _source_markers(source.root)
         owners = {descriptors[name] for name in selected}
         if git is not None:
-            top_level = descriptor_inventory(source.root, descriptors)
+            top_level = git.index_inputs.inventory()
             selected_files = git.owned_files(owners)
         else:
             missing = set(descriptors.values()) - before.keys()

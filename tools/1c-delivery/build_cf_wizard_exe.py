@@ -22,8 +22,8 @@ def helper_imports(source: bytes) -> list[str]:
     return sorted(imports)
 
 
-def build_exe(destination: Path) -> None:
-    if os.name != "nt" or destination.suffix.casefold() != ".exe":
+def build_exe(destination: Path, *, onefile=True) -> None:
+    if os.name != "nt" or (onefile and destination.suffix.casefold() != ".exe"):
         raise ValueError("Укажите путь к EXE и запустите сборку на Windows.")
     if destination.exists():
         raise FileExistsError(destination)
@@ -33,11 +33,13 @@ def build_exe(destination: Path) -> None:
     entrypoint = Path(__file__).with_name("cf_wizard_qt.py").resolve()
     with tempfile.TemporaryDirectory(prefix=".cf-exe-", dir=destination.parent, ignore_cleanup_errors=True) as name:
         work = Path(name)
-        args = [sys.executable, "-B", "-m", "PyInstaller", "--onefile", "--windowed", "--noupx",
-                "--name", destination.stem, "--distpath", str(work / "dist"), "--workpath", str(work / "build"),
+        name = destination.stem if onefile else "CF-Wizard"
+        args = [sys.executable, "-B", "-m", "PyInstaller", "--onefile" if onefile else "--onedir", "--windowed", "--noupx",
+                "--name", name, "--distpath", str(work / "dist"), "--workpath", str(work / "build"),
                 "--specpath", str(work), "--add-data", str(WORKSPACE_HELPER) + os.pathsep
                 + Path(BUNDLED_HELPER_ENTRY).parent.as_posix(),
-                "--add-data", str(entrypoint.parent / "cf_wizard" / "ui") + os.pathsep + "cf_wizard/ui"]
+                "--add-data", str(entrypoint.parent / "cf_wizard" / "ui") + os.pathsep + "cf_wizard/ui",
+                "--additional-hooks-dir", str(entrypoint.parent / "packaging-hooks")]
         for module in helper_imports(helper):
             args.extend(("--hidden-import", module))
         args.append(str(entrypoint))
@@ -46,14 +48,15 @@ def build_exe(destination: Path) -> None:
         search_path = os.pathsep.join((str(windows / "System32"), str(windows)))
         environment = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(work / "cache"), PATH=search_path)
         subprocess.run(args, cwd=entrypoint.parent, env=environment, check=True)
-        (work / "dist" / destination.name).rename(destination)
+        (work / "dist" / (name + ".exe" if onefile else name)).rename(destination)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("exe", type=Path)
+    parser.add_argument("--onedir", action="store_true", help="Портативная папка без распаковки при каждом запуске")
     args = parser.parse_args()
-    build_exe(args.exe.resolve())
+    build_exe(args.exe.resolve(), onefile=not args.onedir)
     print(args.exe.resolve())
 
 

@@ -202,11 +202,11 @@ class GitQtTests(unittest.TestCase):
         with patch('cf_wizard.qt_view.GitConnectionDialog',return_value=dialog),patch.object(dialog,'exec',return_value=QDialog.DialogCode.Accepted),patch('cf_wizard.qt_view.create_client',return_value=client),patch('cf_wizard.qt_view.WindowsTokenStore') as vault:
             bridge.command('git-connect'); self.wait(lambda:bridge.task is None)
             self.assertIs(bridge.git_client,client); vault.return_value.load.assert_not_called(); vault.return_value.save.assert_not_called()
-        bridge.command('open-source'); self.wait(lambda:bridge.task is None and bridge.catalog is not None)
+        bridge.command('open-source'); self.wait(lambda:bridge.task is None and bridge.index_check_task is None and bridge.catalog is not None)
         self.assertIn('GitHub',bridge.snapshot()['activeSource'])
         self.assertEqual(self.js(window,"document.querySelector('[data-source-mode=git]').textContent.trim()"),'Git')
         self.check_choice_menus(window, http)
-        bridge.command('refresh-index'); self.wait(lambda:bridge.task is None)
+        bridge.command('refresh-index'); self.wait(lambda:bridge.task is None and bridge.index_check_task is None)
         self.assertIsNotNone(bridge.index_file)
         bridge.markObject(DOCUMENT,True); bridge.command('preview'); self.wait(lambda:bridge.task is None)
         self.assertIsNotNone(bridge.preview)
@@ -216,6 +216,37 @@ class GitQtTests(unittest.TestCase):
         if os.environ.get('CF_TEST_SCREENSHOT'):
             self.wait(lambda: self.js(window,"document.body.textContent.includes('Перенос целиком')"))
             window.grab().save(os.environ['CF_TEST_SCREENSHOT'])
+        # A new SHA with unchanged metadata reuses SQLite, resets preview and
+        # performs its read-only readiness check outside the Qt event thread.
+        from test_cf_wizard_github import OLD
+        saved = bridge.index_file.read_bytes()
+        changed = dict(bodies)
+        changed['config/Documents/Заказ/Ext/ObjectModule.bsl'] = b'// newer module'
+        http.add_revision(OLD, changed, [REV])
+        bridge.command('open-source')
+        self.wait(lambda:bridge.task is None and bridge.index_check_task is None and bridge.catalog.git.revision == OLD)
+        self.assertIsNone(bridge.preview)
+        self.assertIsNotNone(bridge.index_file)
+        self.assertEqual(bridge.index_file.read_bytes(), saved)
+        self.assertIn('Индекс готов', bridge.index_info)
+        calls = len(http.requests)
+        bridge._sync_index()
+        self.wait(lambda: bridge.index_check_task is None)
+        self.assertEqual(len(http.requests), calls)
+        # Metadata changes disable preview until the explicit update, while
+        # the button still means Update (the existing database was retained).
+        changed['config/Documents/Заказ.xml'] += b'\n<!-- new metadata -->'
+        http.add_revision('e' * 40, changed, [OLD])
+        bridge.command('open-source')
+        self.wait(lambda:bridge.task is None and bridge.index_check_task is None and bridge.catalog.git.revision == 'e' * 40)
+        self.assertIsNone(bridge.index_file)
+        self.assertTrue(bridge.snapshot()['indexExists'])
+        self.assertIn('Нужно обновить', bridge.index_info)
+        bridge.command('refresh-index')
+        self.wait(lambda:bridge.task is None and bridge.index_check_task is None)
+        self.assertIsNotNone(bridge.index_file)
+        bridge.markObject(DOCUMENT,True); bridge.command('preview'); self.wait(lambda:bridge.task is None)
+        self.assertIsNotNone(bridge.preview)
         old_catalog, old_preview=bridge.catalog,bridge.preview
         # A failed connection must not invalidate the opened revision/selection/preview.
         failing=Mock(label='Gitea'); failing.branches.side_effect=GitError('Synthetic denied',401)

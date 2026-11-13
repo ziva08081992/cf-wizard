@@ -199,6 +199,18 @@ def _guard_export_reads(namespace, source: Path, git=None) -> dict[str, str]:
 
         namespace["_wizard_copy"] = copy_verified
         namespace["_wizard_has_blob"] = lambda rel: git.blob(rel) is not None
+        def exists(src, key):
+            relative = namespace["descriptor_rel"](key)
+            return bool(relative) and git.blob(relative) is not None
+
+        def files_below(src, key):
+            relative = namespace["descriptor_rel"](key)
+            if not relative or git.blob(relative) is None:
+                return []
+            return [relative, *sorted(git.owned_files({relative}) - {relative})]
+
+        namespace["exists"] = exists
+        namespace["files_below"] = files_below
     return hashes
 
 
@@ -249,7 +261,8 @@ def resolve_dependencies(helper: Path, source: Path, selected: tuple[str, ...],
     ))
     namespace = {"__name__": "partial_cf_dependencies", "__file__": str(helper),
                  "_wizard_dependency": dependency, "_wizard_without_comments": without_bsl_comments}
-    index = IndexReader.open(index_path, identity, HELPER_SHA256, pinned=git is not None) if index_path else None
+    index = IndexReader.open(index_path, identity, HELPER_SHA256, pinned=git is not None,
+                             inputs=git.index_inputs if git is not None else None) if index_path else None
     if git is not None and index is None:
         raise ValueError("Создайте или обновите индекс выбранной ревизии Git.")
     try:
@@ -264,6 +277,8 @@ def resolve_dependencies(helper: Path, source: Path, selected: tuple[str, ...],
                  "            for rel in (below(key) if keep else ()):\n                if rel.endswith(KEPT_MODULES):\n"),
                 ("        if rel in below(key):\n            items = predefined_codes(",
                  "        if _wizard_has_blob(rel):\n            items = predefined_codes("),
+                ('if m.tag == "Language" and os.path.isfile(native(src, "Languages/" + name + ".xml")):',
+                 'if m.tag == "Language" and _wizard_has_blob("Languages/" + name + ".xml"):'),
             ))
         exec(compile(text, str(helper), "exec"), namespace)
         hashes = _guard_export_reads(namespace, source, git)
@@ -296,7 +311,11 @@ def run_job(path: Path) -> int:
                          "_wizard_dependency": dependency, "_wizard_without_comments": without_bsl_comments,
                          "_wizard_read_bytes": lambda path: Path(path).read_bytes()}
             if index_path := request.get("index"):
-                index = IndexReader.open(Path(index_path), request["index_identity"], HELPER_SHA256)
+                context = request.get("git_index_context")
+                index = IndexReader.open(Path(index_path), request["index_identity"], HELPER_SHA256,
+                                         context=context, pinned=context is not None)
+                if context is not None and index is None:
+                    raise ValueError("Индекс Git не соответствует заданию. Обновите индекс и предпросмотр.")
                 if index is not None:
                     source = _instrument_index(source)
                     namespace["_wizard_index"] = index
