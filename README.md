@@ -61,7 +61,7 @@
 
 ## Благодарности
 
-- **[alonehobo / 1c-partial-cf](https://github.com/alonehobo/1c-partial-cf)** — исторический прототип. После замены вычислительного ядра в проекте сохраняются перенесённые части читателей, проекции XML и настроек объединения. Python во время работы EXE не запускается. [Покомпонентная проверка происхождения](docs/architecture/provenance.md), [уведомления](NOTICE).
+- **[alonehobo / 1c-partial-cf](https://github.com/alonehobo/1c-partial-cf)** — исторический прототип. В проекте сохраняются перенесённые части читателей, проекции XML и настроек объединения. [Покомпонентная проверка происхождения](docs/architecture/provenance.md), [уведомления](NOTICE).
 - **[Datafrog](https://github.com/rust-lang/datafrog)** — библиотека, на которой работает новое положительное замыкание зависимостей. Статус внедрения и область ответственности описаны в [архитектурном решении](docs/architecture/dependency-kernel.md).
 - **[Lucide](https://lucide.dev/)** — пиктограммы интерфейса; сведения об авторах и лицензии сохранены в [NOTICE](NOTICE).
 - **[SQLite](https://www.sqlite.org/)** — встроенная база для постоянного индекса зависимостей. Условия SQLite и Rust-обёрток описаны в [LICENSING.md](LICENSING.md#сторонние-компоненты).
