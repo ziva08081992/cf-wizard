@@ -364,6 +364,8 @@ fn wide_directory_is_shared_and_blob_lookups_do_not_clone_the_folder() {
         root: root.path().join("config"),
         blobs: root.path().join("blobs"),
         trees: Mutex::new(BTreeMap::from([("CommonModules".into(), entries.clone())])),
+        oid_trees: Mutex::new(BTreeMap::new()),
+        inventory_workers: AtomicUsize::new(0),
     };
     assert!(Arc::ptr_eq(
         &entries,

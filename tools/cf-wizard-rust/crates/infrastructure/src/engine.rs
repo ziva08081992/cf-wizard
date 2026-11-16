@@ -143,6 +143,14 @@ pub(crate) fn object_files(
     key: &str,
     cancel: &Cancellation,
 ) -> Result<Vec<String>> {
+    object_files_with_inventory(source, key, cancel, None)
+}
+fn object_files_with_inventory(
+    source: &dyn MetadataSource,
+    key: &str,
+    cancel: &Cancellation,
+    inventory: Option<Result<Vec<String>>>,
+) -> Result<Vec<String>> {
     let Some(rel) = descriptor(key) else {
         return Ok(vec![]);
     };
@@ -151,7 +159,10 @@ pub(crate) fn object_files(
     }
     let base = rel.strip_suffix(".xml").expect("descriptor extension");
     let mut files = vec![rel.clone()];
-    files.extend(source.files_below(base, cancel)?);
+    files.extend(match inventory {
+        Some(result) => result?,
+        None => source.files_below(base, cancel)?,
+    });
     Ok(files)
 }
 pub(crate) fn metadata_listing(
@@ -1334,7 +1345,39 @@ impl<'a> Session<'a> {
             }
         }
         let mut merge_rules = BTreeMap::new();
-        for (key, built) in self.built.clone() {
+        let owners: Vec<_> = self.built.keys().cloned().collect();
+        let mut inventories = BTreeMap::new();
+        for (ordinal, (key, built)) in self.built.clone().into_iter().enumerate() {
+            if ordinal % cf_application::INVENTORY_WINDOW_LIMIT == 0
+                && self.source.is_pinned()
+                && self.source.manifest().is_some()
+            {
+                let end = (ordinal + cf_application::INVENTORY_WINDOW_LIMIT).min(owners.len());
+                let pending: Vec<_> = owners[ordinal..end]
+                    .iter()
+                    .filter(|owner| !self.below.contains_key(*owner))
+                    .cloned()
+                    .collect();
+                let paths: Vec<_> = pending
+                    .iter()
+                    .map(|owner| {
+                        descriptor(owner)
+                            .expect("metadata descriptor")
+                            .trim_end_matches(".xml")
+                            .to_owned()
+                    })
+                    .collect();
+                if !paths.is_empty()
+                    && let Some(results) = self.source.inventory_window(&paths, self.cancel)?
+                {
+                    if results.len() != pending.len() {
+                        return Err(Error::Invalid(
+                            "Неверное число результатов Git inventory".into(),
+                        ));
+                    }
+                    inventories.extend(pending.into_iter().zip(results));
+                }
+            }
             let kind = key.split_once('.').expect("metadata key").0;
             let base = format!(
                 "{}/",
@@ -1346,7 +1389,18 @@ impl<'a> Session<'a> {
             // The complete owned-file inventory is already a frozen input.
             // Exact inventory entries prove presence. An absent exact spelling
             // still requires the provider lookup (Windows paths ignore case).
-            let inventory: BTreeSet<_> = self.below(&key)?.into_iter().collect();
+            let files = if let Some(result) = inventories.remove(&key) {
+                // Descriptor presence and all frozen observations remain at the
+                // original serial position. A later speculative error cannot
+                // replace an earlier owner's omitted-module error.
+                let files =
+                    object_files_with_inventory(self.source, &key, self.cancel, Some(result))?;
+                self.below.insert(key.clone(), files.clone());
+                files
+            } else {
+                self.below(&key)?
+            };
+            let inventory: BTreeSet<_> = files.into_iter().collect();
             for module in crate::kinds::STUB_MODULES {
                 let path = format!("{base}Ext/{module}.bsl");
                 if self.observe_module(&path, &inventory)? {

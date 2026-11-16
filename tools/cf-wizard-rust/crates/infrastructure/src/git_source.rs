@@ -8,6 +8,9 @@ use cf_application::{Cancellation, MetadataSource, SourceEntry};
 use cf_domain::{Catalog, Error, Result};
 use serde::Serialize;
 #[cfg(test)]
+#[path = "git_inventory_tests.rs"]
+mod inventory_tests;
+#[cfg(test)]
 #[path = "git_source_tests.rs"]
 mod tests;
 use std::{
@@ -15,7 +18,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use unicode_casefold::UnicodeCaseFold;
 
@@ -47,32 +50,149 @@ fn atomic(path: &Path, data: &[u8]) -> Result<()> {
     file.persist(path).map_err(crate::external)?;
     Ok(())
 }
+type SharedTree = Arc<BTreeMap<String, Entry>>;
+type SharedTreeResult = std::result::Result<SharedTree, Arc<Error>>;
+
+/// Only this window shares errors. A later user operation may explicitly retry;
+/// no failed or partial directory is inserted into the checked source caches.
+#[derive(Default)]
+struct InventoryFetches {
+    trees: Mutex<BTreeMap<String, Arc<OnceLock<SharedTreeResult>>>>,
+}
+fn copied_error(error: &Error) -> Error {
+    match error {
+        Error::Cancelled => Error::Cancelled,
+        Error::Invalid(message) => Error::Invalid(message.clone()),
+        Error::External(message) => Error::External(message.clone()),
+    }
+}
+
 struct Files {
     client: Arc<dyn GitProvider>,
     connection: Connection,
     revision: String,
     root: PathBuf,
     blobs: PathBuf,
-    trees: Mutex<BTreeMap<String, Arc<BTreeMap<String, Entry>>>>,
+    trees: Mutex<BTreeMap<String, SharedTree>>,
+    oid_trees: Mutex<BTreeMap<String, SharedTree>>,
+    #[cfg(test)]
+    inventory_workers: std::sync::atomic::AtomicUsize,
 }
 impl Files {
-    fn directory(&self, path: &str, c: &Cancellation) -> Result<Arc<BTreeMap<String, Entry>>> {
+    fn tree(
+        &self,
+        oid: &str,
+        c: &Cancellation,
+        fetches: Option<&InventoryFetches>,
+    ) -> Result<SharedTree> {
+        let load = || {
+            c.check()?;
+            if let Some(value) = self.oid_trees.lock().map_err(crate::external)?.get(oid) {
+                return Ok(Arc::clone(value));
+            }
+            // No cache mutex is held while calling the provider.
+            let value = Arc::new(checked(self.client.tree(oid, c)?)?);
+            self.oid_trees
+                .lock()
+                .map_err(crate::external)?
+                .insert(oid.into(), Arc::clone(&value));
+            Ok(value)
+        };
+        let Some(fetches) = fetches else {
+            return load();
+        };
+        let flight = {
+            let mut rows = fetches.trees.lock().map_err(crate::external)?;
+            Arc::clone(rows.entry(oid.into()).or_default())
+        };
+        flight
+            .get_or_init(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(load))
+                    .unwrap_or_else(|_| {
+                        Err(Error::External(
+                            "Аварийная ошибка получения каталога Git".into(),
+                        ))
+                    })
+                    .map_err(Arc::new)
+            })
+            .clone()
+            .map_err(|error| copied_error(&error))
+    }
+    fn directory(&self, path: &str, c: &Cancellation) -> Result<SharedTree> {
+        self.directory_with(path, c, None)
+    }
+    fn directory_with(
+        &self,
+        path: &str,
+        c: &Cancellation,
+        fetches: Option<&InventoryFetches>,
+    ) -> Result<SharedTree> {
         c.check()?;
         if let Some(v) = self.trees.lock().map_err(crate::external)?.get(path) {
-            return Ok(v.clone());
+            return Ok(Arc::clone(v));
         }
         let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-        let entries = self.directory(parent, c)?;
+        let entries = self.directory_with(parent, c, fetches)?;
         let value = match entries.get(name) {
-            Some(e) if e.kind == EntryKind::Tree => checked(self.client.tree(&e.oid, c)?)?,
-            _ => BTreeMap::new(),
+            Some(e) if e.kind == EntryKind::Tree => self.tree(&e.oid, c, fetches)?,
+            _ => Arc::new(BTreeMap::new()),
         };
-        let value = Arc::new(value);
         self.trees
             .lock()
             .map_err(crate::external)?
-            .insert(path.into(), value.clone());
+            .insert(path.into(), Arc::clone(&value));
         Ok(value)
+    }
+    fn below_with(
+        &self,
+        path: &str,
+        c: &Cancellation,
+        fetches: Option<&InventoryFetches>,
+    ) -> Result<Vec<String>> {
+        let mut pending = vec![path.to_owned()];
+        let mut out = vec![];
+        while let Some(dir) = pending.pop() {
+            c.check()?;
+            if dir.split('/').count() > 128 {
+                return Err(Error::Invalid("Слишком глубокое дерево Git".into()));
+            }
+            for e in self.directory_with(&dir, c, fetches)?.values() {
+                let rel = format!("{dir}/{}", e.name);
+                if e.kind == EntryKind::Tree {
+                    pending.push(rel);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+    /// A complete warm walk is returned directly, with no worker dispatch or
+    /// second traversal. Unknown paths remain unknown, never inferred absent.
+    fn known_below(&self, path: &str, c: &Cancellation) -> Result<Option<Vec<String>>> {
+        let trees = self.trees.lock().map_err(crate::external)?;
+        let mut pending = vec![path.to_owned()];
+        let mut out = vec![];
+        while let Some(dir) = pending.pop() {
+            c.check()?;
+            if dir.split('/').count() > 128 {
+                return Err(Error::Invalid("Слишком глубокое дерево Git".into()));
+            }
+            let Some(entries) = trees.get(&dir) else {
+                return Ok(None);
+            };
+            for e in entries.values() {
+                let rel = format!("{dir}/{}", e.name);
+                if e.kind == EntryKind::Tree {
+                    pending.push(rel);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+        out.sort();
+        Ok(Some(out))
     }
     fn blob(&self, path: &str, c: &Cancellation) -> Result<Option<Entry>> {
         relative_path(path)?;
@@ -153,7 +273,7 @@ impl GitSource {
             }
             tree = e.oid.clone();
         }
-        let root_tree = checked(client.tree(&tree, c)?)?;
+        let root_tree = Arc::new(checked(client.tree(&tree, c)?)?);
         let cache = canonical_future(Path::new(&connection.cache))?;
         if cache
             .components()
@@ -176,7 +296,10 @@ impl GitSource {
             revision: revision.clone(),
             blobs: cache.join(&repo).join("blobs"),
             root: root.clone(),
-            trees: Mutex::new(BTreeMap::from([("".into(), Arc::new(root_tree))])),
+            trees: Mutex::new(BTreeMap::from([("".into(), Arc::clone(&root_tree))])),
+            oid_trees: Mutex::new(BTreeMap::from([(tree, root_tree)])),
+            #[cfg(test)]
+            inventory_workers: std::sync::atomic::AtomicUsize::new(0),
         };
         let catalog = catalog(&files.read("Configuration.xml", c)?)?;
         let owners = catalog
@@ -444,24 +567,69 @@ impl MetadataSource for GitSource {
             .collect()
     }
     fn files_below(&self, path: &str, c: &Cancellation) -> Result<Vec<String>> {
-        let mut pending = vec![path.to_owned()];
-        let mut out = vec![];
-        while let Some(dir) = pending.pop() {
-            c.check()?;
-            if dir.split('/').count() > 128 {
-                return Err(Error::Invalid("Слишком глубокое дерево Git".into()));
-            }
-            for e in self.files.directory(&dir, c)?.values() {
-                let rel = format!("{dir}/{}", e.name);
-                if e.kind == EntryKind::Tree {
-                    pending.push(rel);
-                } else {
-                    out.push(rel);
-                }
+        self.files.below_with(path, c, None)
+    }
+    fn inventory_window(
+        &self,
+        paths: &[String],
+        c: &Cancellation,
+    ) -> Result<Option<Vec<Result<Vec<String>>>>> {
+        if paths.len() > cf_application::INVENTORY_WINDOW_LIMIT {
+            return Err(Error::Invalid("Превышено окно Git inventory".into()));
+        }
+        c.check()?;
+        let mut results: Vec<Option<Result<Vec<String>>>> =
+            (0..paths.len()).map(|_| None).collect();
+        let mut cold = vec![];
+        for (index, path) in paths.iter().enumerate() {
+            match self.files.known_below(path, c) {
+                Ok(Some(files)) => results[index] = Some(Ok(files)),
+                Ok(None) => cold.push((index, path)),
+                Err(error) => results[index] = Some(Err(error)),
             }
         }
-        out.sort();
-        Ok(out)
+        if !cold.is_empty() {
+            let fetches = InventoryFetches::default();
+            std::thread::scope(|scope| {
+                let mut jobs = vec![];
+                for (index, path) in cold {
+                    let fetches = &fetches;
+                    let job = std::thread::Builder::new()
+                        .name("cf-git-inventory".into())
+                        .spawn_scoped(scope, move || self.files.below_with(path, c, Some(fetches)));
+                    match job {
+                        Ok(job) => {
+                            #[cfg(test)]
+                            self.files
+                                .inventory_workers
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            jobs.push((index, job));
+                        }
+                        // Thread creation has not started the read. The original
+                        // synchronous read is a fallback, not a provider retry.
+                        Err(_) => {
+                            results[index] = Some(self.files.below_with(path, c, Some(fetches)));
+                        }
+                    }
+                }
+                for (index, job) in jobs {
+                    results[index] = Some(job.join().unwrap_or_else(|_| {
+                        Err(Error::External(
+                            "Аварийная ошибка обхода Git inventory".into(),
+                        ))
+                    }));
+                }
+            });
+        }
+        // No serial omitted-file read can overlap these jobs. Each window is
+        // fully joined, so the combined preview tree/file budget stays <= 4.
+        c.check()?;
+        Ok(Some(
+            results
+                .into_iter()
+                .map(|result| result.expect("every inventory job has joined"))
+                .collect(),
+        ))
     }
     fn snapshot(&self, c: &Cancellation) -> Result<String> {
         c.check()?;

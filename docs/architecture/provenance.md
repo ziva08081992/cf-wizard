@@ -33,3 +33,5 @@
 
 
 0.8.7: собственная адресная оптимизация Windows attribute queries; Microsoft docs использованы как описание API/ABI, не как исходный код приложения. Прежние prototype/offline compatibility origins, third-party notices и нерешённые вопросы публичного распространения не переобъявлены. Изменён source/output metadata-query path, C01–C16 ownership/semantics без изменений.
+
+0.8.8: собственные правки группировки заглушек и журналирования в `desktop/src/model.rs`, ограниченного получения полного Git inventory и объединения одновременных запросов к одному tree OID в `application`/`infrastructure`, с адресными Rust-тестами. Новый сторонний прикладной код не добавлен. Семантика читателей и compiler, guards, нормативные таблицы, версии сторонних библиотек и прежние ограничения происхождения сохранены.

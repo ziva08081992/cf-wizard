@@ -24,6 +24,8 @@ impl Cancellation {
         }
     }
 }
+/// Maximum number of owners whose complete Git inventories may be speculative.
+pub const INVENTORY_WINDOW_LIMIT: usize = 4;
 pub trait MetadataSource: Send + Sync {
     fn manifest(&self) -> Option<&cf_domain::GitInputs> {
         None
@@ -38,6 +40,17 @@ pub trait MetadataSource: Send + Sync {
         cancel.check()
     }
     fn files_below(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<String>>;
+    /// Optional pinned-Git optimization. Each ordered entry is the complete
+    /// descendant inventory or its original error. All work is joined before
+    /// return; callers observe entries serially, never retry a failed entry.
+    /// The default keeps local and other providers on their original path.
+    fn inventory_window(
+        &self,
+        _paths: &[String],
+        _cancel: &Cancellation,
+    ) -> Result<Option<Vec<Result<Vec<String>>>>> {
+        Ok(None)
+    }
     fn exists(&self, relative: &str, cancel: &Cancellation) -> Result<bool>;
     fn list_directory(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<SourceEntry>>;
     fn snapshot(&self, cancel: &Cancellation) -> Result<String>;

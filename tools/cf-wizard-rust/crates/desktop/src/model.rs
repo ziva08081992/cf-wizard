@@ -24,6 +24,29 @@ use std::{
 use tao::event_loop::EventLoopProxy;
 use zeroize::Zeroizing;
 pub type Update = Box<dyn FnOnce(&mut Model) + Send>;
+type StubGroups = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+fn stub_groups(stubs: &BTreeMap<String, cf_domain::Stub>) -> StubGroups {
+    let mut groups = StubGroups::new();
+    for (key, stub) in stubs {
+        let kind = key.split('.').next().unwrap_or("");
+        let owners = stub
+            .causes
+            .iter()
+            .map(|cause| cause.owner.clone())
+            .collect::<BTreeSet<_>>();
+        groups
+            .entry(kind.into())
+            .or_default()
+            .insert(key.clone(), owners.into_iter().collect());
+    }
+    groups
+}
+
+fn preserve_operation_error<T>(operation: Result<T>, log_write: Result<()>) -> Result<T> {
+    operation.and_then(|value| log_write.map(|()| value))
+}
+
 pub enum Event {
     Rpc(Value),
     Done {
@@ -236,18 +259,7 @@ impl Model {
         let Some(plan) = &self.plan else {
             return json!([]);
         };
-        let mut groups = BTreeMap::<String, BTreeMap<String, Vec<String>>>::new();
-        for (key, stub) in &plan.composition().stubs {
-            for cause in &stub.causes {
-                let kind = cause.owner.split('.').next().unwrap_or("");
-                groups
-                    .entry(kind.into())
-                    .or_default()
-                    .entry(key.clone())
-                    .or_default()
-                    .push(cause.owner.clone());
-            }
-        }
+        let mut groups = stub_groups(&plan.composition().stubs);
         let mut out = vec![];
         for (kind, _) in &self.labels {
             if let Some(rows) = groups.remove(kind) {
@@ -567,9 +579,17 @@ impl Model {
         let selected = self.selected.clone();
         let excluded = self.excluded.clone();
         self.start("Определяю зависимости…",callback,Some("preview"),move|c,log|{
-            let reader=index.map(|path|IndexReader::open(&path,source.manifest().map_or(Proof::Local(source.identity()),Proof::Git))).transpose()?;
-            let plan=RustEngine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&excluded,&c)?;
-            if let Some(log)=log{log.value("dependencies-ready",json!({"kernel":"datafrog-2.0.1","selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings,"diagnostics":plan.composition().diagnostics,"choices":plan.composition().choices,"immediateReasons":plan.composition().reasons.len()}))?;}
+            let index_started=Instant::now();
+            let opened=index.map(|path|IndexReader::open(&path,source.manifest().map_or(Proof::Local(source.identity()),Proof::Git))).transpose();
+            let index_open_ms=index_started.elapsed().as_secs_f64()*1000.;
+            let index_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-index-open",json!({"milliseconds":index_open_ms,"success":opened.is_ok(),"hasIndex":matches!(&opened,Ok(Some(_)))})));
+            let reader=preserve_operation_error(opened,index_log)?;
+            let engine_started=Instant::now();
+            let prepared=RustEngine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&excluded,&c);
+            let engine_ms=engine_started.elapsed().as_secs_f64()*1000.;
+            let engine_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-engine",json!({"milliseconds":engine_ms,"success":prepared.is_ok()})));
+            let plan=preserve_operation_error(prepared,engine_log)?;
+            if let Some(log)=log{log.value("dependencies-ready",json!({"kernel":"datafrog-2.0.1","selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings,"diagnostics":plan.composition().diagnostics,"choices":plan.composition().choices,"immediateReasons":plan.composition().reasons.len(),"metrics":plan.composition().metrics}))?;}
             Ok(Box::new(move|m|{let count=plan.composition().stubs.len();let complete=plan.composition().complete();m.plan=Some(plan);m.package=None;m.status=format!("Предпросмотр {} · объектов {} · заглушек {} · исключено {}",if complete{"готов"}else{"неполный"},m.selected.len(),count,m.excluded.len());m.status_kind=if complete{"ok"}else{"error"}.into();m.signals.push(("stubsChanged".into(),vec![m.stubs()]));}))
         })
     }
@@ -974,4 +994,86 @@ pub fn shell_open(path: &Path) -> Result<()> {
 #[cfg(not(windows))]
 pub fn shell_open(_: &Path) -> Result<()> {
     Err(Error::Invalid("Внешнее открытие доступно в Windows".into()))
+}
+
+#[cfg(test)]
+mod stub_group_tests {
+    use super::*;
+    use cf_domain::{Cause, Stub};
+
+    fn stub(key: &str, owners: &[&str]) -> (String, Stub) {
+        (
+            key.into(),
+            Stub {
+                key: key.into(),
+                causes: owners
+                    .iter()
+                    .map(|owner| Cause {
+                        owner: (*owner).into(),
+                        required: true,
+                    })
+                    .collect(),
+            },
+        )
+    }
+
+    #[test]
+    fn groups_dependencies_by_their_own_type_instead_of_owner_type() {
+        let stubs = BTreeMap::from([
+            stub("Catalog.Items", &["CommonModule.Exchange"]),
+            stub("Document.Order", &["InformationRegister.Queue"]),
+        ]);
+        let groups = stub_groups(&stubs);
+        assert_eq!(
+            groups.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Catalog", "Document"]
+        );
+        assert_eq!(
+            groups["Catalog"]["Catalog.Items"],
+            ["CommonModule.Exchange"]
+        );
+        assert!(!groups.contains_key("CommonModule"));
+        assert!(!groups.contains_key("InformationRegister"));
+    }
+
+    #[test]
+    fn each_stub_has_one_row_while_retaining_every_distinct_cause() {
+        let stubs = BTreeMap::from([
+            stub(
+                "Catalog.Items",
+                &[
+                    "InformationRegister.Queue",
+                    "CommonModule.Exchange",
+                    "CommonModule.Exchange",
+                ],
+            ),
+            stub("Document.Order", &[]),
+        ]);
+        let groups = stub_groups(&stubs);
+        assert_eq!(
+            groups.values().map(BTreeMap::len).sum::<usize>(),
+            stubs.len()
+        );
+        assert_eq!(
+            groups["Catalog"]["Catalog.Items"],
+            ["CommonModule.Exchange", "InformationRegister.Queue"]
+        );
+        assert!(groups["Document"]["Document.Order"].is_empty());
+    }
+
+    #[test]
+    fn phase_logging_keeps_the_original_operation_error() {
+        let result = preserve_operation_error::<()>(
+            Err(Error::Invalid("index failure".into())),
+            Err(Error::External("log failure".into())),
+        );
+        assert!(matches!(result, Err(Error::Invalid(message)) if message == "index failure"));
+    }
+
+    #[test]
+    fn phase_logging_preserves_success_and_reports_log_failure_after_success() {
+        assert_eq!(preserve_operation_error(Ok(7), Ok(())).unwrap(), 7);
+        let result = preserve_operation_error(Ok(7), Err(Error::External("log failure".into())));
+        assert!(matches!(result, Err(Error::External(message)) if message == "log failure"));
+    }
 }

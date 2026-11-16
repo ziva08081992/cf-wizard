@@ -1,4 +1,6 @@
-# CF Wizard · Rust 0.8.7
+# CF Wizard · Rust 0.8.8
+
+Исправлены группы заглушек, добавлено ограниченное параллельное чтение состава объектов Git и измерения этапов предпросмотра; [границы проверки версии 0.8.8](../../docs/reports/cf-wizard-0.8.8-acceptance.md).
 
 Прикладные source readers, frozen projection/package/merge compiler и независимые guards описаны в [профиле ядра](../../docs/architecture/owned-source-profile.md). Старые producers используются только в offline compatibility tests. После смены semantic versions прежний индекс требует явного обновления; предпросмотр его не переписывает. [Изменения и фактические границы проверок](../../docs/releases/v0.8.7.md).
 
