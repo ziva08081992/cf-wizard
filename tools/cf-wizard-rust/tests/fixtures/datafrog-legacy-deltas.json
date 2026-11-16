@@ -1,0 +1,13 @@
+{
+  "origin": "M10/T05: an included document is not sufficient; its exact registrar link is a required fragment",
+  "register-recorder-and-common-attribute": {
+    "additional_causes": {
+      "Document.Ясный": [{"owner":"AccumulationRegister.Остатки","required":true}]
+    }
+  },
+  "cyclic-deep-path": {
+    "reason": "T02 removes the old depth-eight truncation; the final referenced attribute must survive",
+    "additional_members": {"Catalog.А":["*.Нужное"]},
+    "stage_from_source": ["Catalogs/А.xml"]
+  }
+}

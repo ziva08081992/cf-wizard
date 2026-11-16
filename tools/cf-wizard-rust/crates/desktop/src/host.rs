@@ -267,7 +267,7 @@ fn native_check(args: &[String]) -> Result<()> {
             &options,
             &cf_application::BuildServices {
                 output: &Output { log: log.clone() },
-                builder: &Native,
+                builder: &Native { log: log.clone() },
                 log: log.as_ref(),
             },
             &cancel,

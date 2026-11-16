@@ -416,6 +416,11 @@
       gitBranch.title = next.gitBranch;
     }
     state = next;
+    const dependencyErrors = state.dependencyErrors || [];
+    one("[data-dependency-errors]").hidden = dependencyErrors.length === 0;
+    const errorLabels = {missing_object:"Не найден объект", missing_member:"Не найден элемент", missing_candidate:"Нет допустимого кандидата", missing_file:"Не найден обязательный файл"};
+    one("[data-dependency-error-items]").replaceChildren(...dependencyErrors.map(error =>
+      element("li", `${errorLabels[error.kind] || "Ошибка зависимости"}: ${error.target}. Требуется для ${error.owner}. Источник: ${error.source}`)));
     renderGitTask(gitTaskStarted);
     if (catalogueChanged) pendingSelection.clear();
     for (const [key, input] of Object.entries(fields)) {
@@ -533,7 +538,12 @@
       }
     });
     for (const input of [gitTaskKey, gitTaskDays]) {
-      input.addEventListener("input", updateGitTaskButton);
+      input.addEventListener("input", () => {
+        updateGitTaskButton();
+        if (input === gitTaskKey && !input.value.trim() && state?.gitTaskResult && !state.busy) {
+          bridge.command("clear-git-task");
+        }
+      });
       input.addEventListener("keydown", event => {
         if (event.key === "Enter") {
           event.preventDefault();

@@ -8,12 +8,127 @@ const ROOT: &str = "CommonModule.Root";
 const TARGET: &str = "Catalog.Target";
 const SIDE: &str = "Catalogs/Target/Forms/Screen/Ext/Form.xml";
 
+#[test]
+fn namespaced_minimum_field_uses_source_order_with_resource_priority() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = BTreeMap::from([
+        (
+            "Configuration.xml",
+            "<MetaDataObject><Configuration><Properties><Name>Namespaced</Name></Properties><ChildObjects><CommonModule>Root</CommonModule><InformationRegister>Balance</InformationRegister></ChildObjects></Configuration></MetaDataObject>",
+        ),
+        (
+            "CommonModules/Root.xml",
+            "<MetaDataObject><CommonModule><Properties><Name>Root</Name></Properties></CommonModule></MetaDataObject>",
+        ),
+        (
+            "InformationRegisters/Balance.xml",
+            "<m:MetaDataObject xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\"><m:InformationRegister><m:Properties><m:Name>Balance</m:Name><m:WriteMode>Independent</m:WriteMode></m:Properties><m:ChildObjects><m:Attribute><m:Properties><m:Name>Extra</m:Name></m:Properties></m:Attribute><m:Dimension><m:Properties><m:Name>Key</m:Name></m:Properties></m:Dimension><m:Resource><m:Properties><m:Name>Amount</m:Name></m:Properties></m:Resource><m:Resource><m:Properties><m:Name>Later</m:Name></m:Properties></m:Resource></m:ChildObjects></m:InformationRegister></m:MetaDataObject>",
+        ),
+    ]);
+    let encoded: BTreeMap<_, _> = files
+        .into_iter()
+        .map(|(path, xml)| (path, STANDARD.encode(xml)))
+        .collect();
+    let src = source(
+        &serde_json::json!({"source": encoded}),
+        &dir.path().join("source"),
+        false,
+    );
+    let cancel = Cancellation::default();
+    let selected = BTreeSet::from([ROOT.into()]);
+    let excluded = BTreeSet::new();
+    let mut session = Session::new(&src, None, &selected, &excluded, &cancel).unwrap();
+    session
+        .note(
+            Reference {
+                kind: "InformationRegister".into(),
+                name: "Balance".into(),
+                ..Reference::default()
+            },
+            ROOT,
+        )
+        .unwrap();
+    session.closure().unwrap();
+    while session.choose_structural().unwrap() {
+        session.closure().unwrap();
+    }
+    let choices: Vec<_> = session
+        .choices
+        .iter()
+        .map(|choice| (choice.rule.clone(), choice.chosen.clone(), choice.ordinal))
+        .collect();
+    assert_eq!(
+        choices,
+        vec![(
+            "minimum_field".to_owned(),
+            "InformationRegister.Balance.Resource.Amount".to_owned(),
+            2
+        )]
+    );
+    assert_eq!(
+        session.states["InformationRegister.Balance"].spec.members,
+        BTreeSet::from([("Resource".into(), "Amount".into())])
+    );
+    assert_eq!(
+        src.reads.lock().unwrap()["InformationRegisters/Balance.xml"],
+        1
+    );
+    let emitted = session.built["InformationRegister.Balance"]
+        .output()
+        .unwrap()
+        .descriptor;
+    assert!(emitted.contains("<m:Name>Amount</m:Name>"));
+    assert!(!emitted.contains("<m:Name>Later</m:Name>"));
+    assert!(!emitted.contains("<m:Name>Extra</m:Name>"));
+}
+
+#[test]
+fn late_optional_to_required_upgrade_rechecks_missing_retained_files() {
+    let (_dir, src) = fixture();
+    fs::remove_file(src.local.root.join("Catalogs/Target/Forms/Screen.xml")).unwrap();
+    let cancel = Cancellation::default();
+    let mut session = Session::new(
+        &src,
+        None,
+        &BTreeSet::from([ROOT.into()]),
+        &BTreeSet::new(),
+        &cancel,
+    )
+    .unwrap();
+    let reference = Reference {
+        kind: "Catalog".into(),
+        name: "Target".into(),
+        member: "Form".into(),
+        member_name: "Screen".into(),
+        ..Reference::default()
+    };
+    session.comment = true;
+    session.note(reference.clone(), ROOT).unwrap();
+    session.comment = false;
+    session.closure().unwrap();
+    while session.choose_structural().unwrap() {
+        session.closure().unwrap();
+    }
+    assert!(session.diagnostics.is_empty());
+    session.note(reference, ROOT).unwrap();
+    session.closure().unwrap();
+    assert!(
+        session
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::MissingFile
+                && d.target == "Catalogs/Target/Forms/Screen.xml"),
+        "{:?}",
+        session.diagnostics
+    );
+}
+
 fn fixture() -> (tempfile::TempDir, Source) {
     let dir = tempfile::tempdir().unwrap();
     let mut files = BTreeMap::from([
         ("Configuration.xml".to_owned(), "<MetaDataObject><Configuration><Properties><Name>MemoFixture</Name></Properties><ChildObjects><CommonModule>Root</CommonModule><Catalog>Target</Catalog><Catalog>A</Catalog><Catalog>B</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>".to_owned()),
         ("CommonModules/Root.xml".into(), "<MetaDataObject><CommonModule><Properties><Name>Root</Name></Properties></CommonModule></MetaDataObject>".into()),
-        ("Catalogs/Target.xml".into(), "<MetaDataObject xmlns:xr=\"urn:test\"><Catalog><Properties><Name>Target</Name><Comment>first</Comment><Items><xr:Item>Catalog.A Catalog.B</xr:Item></Items></Properties><ChildObjects><Attribute><Properties><Name>Extra</Name></Properties></Attribute><Form>Screen</Form></ChildObjects></Catalog></MetaDataObject>".into()),
+        ("Catalogs/Target.xml".into(), "<MetaDataObject xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"><Catalog><Properties><Name>Target</Name><Comment>first</Comment><Items><xr:Item>Catalog.A Catalog.B</xr:Item></Items></Properties><ChildObjects><Attribute><Properties><Name>Extra</Name></Properties></Attribute><Form>Screen</Form></ChildObjects></Catalog></MetaDataObject>".into()),
         ("Catalogs/Target/Forms/Screen.xml".into(), "<MetaDataObject><Form><Properties><Name>Screen</Name></Properties></Form></MetaDataObject>".into()),
         (SIDE.into(), "<Form/>".into()),
         ("Catalogs/Target/Ext/Predefined.xml".into(), "<PredefinedData/>".into()),
@@ -82,12 +197,13 @@ fn assert_fresh_output(session: &Session<'_>) {
         &present,
     )
     .unwrap();
-    assert_eq!(session.built[TARGET].output.descriptor, fresh.descriptor);
-    assert_eq!(session.built[TARGET].output.patterns, fresh.patterns);
+    let actual = session.built[TARGET].output().unwrap();
+    assert_eq!(actual.descriptor, fresh.descriptor);
+    assert_eq!(actual.patterns, fresh.patterns);
 }
 
 #[test]
-fn session_memo_hits_keep_side_scans_and_short_circuited_inputs_are_invalidated() {
+fn explicit_projection_memo_keeps_side_checks_and_requires_both_list_targets() {
     let (_dir, src) = fixture();
     let cancel = Cancellation::default();
     let selected = BTreeSet::from([ROOT.into()]);
@@ -95,10 +211,7 @@ fn session_memo_hits_keep_side_scans_and_short_circuited_inputs_are_invalidated(
     let mut session = Session::new(&src, None, &selected, &excluded, &cancel).unwrap();
     prime(&mut session);
     assert_eq!(src.reads.lock().unwrap()[SIDE], 1);
-    assert_eq!(
-        session.stub_inputs[TARGET].1,
-        BTreeMap::from([("Catalog.A".into(), false)])
-    );
+    assert!(session.states[TARGET].spec.property_items["Items"].is_empty());
 
     replay(&mut session);
     assert_eq!(session.stub_builds[TARGET], 1, "unchanged inputs must hit");
@@ -118,7 +231,7 @@ fn session_memo_hits_keep_side_scans_and_short_circuited_inputs_are_invalidated(
     replay(&mut session);
     assert_eq!(
         session.stub_builds[TARGET], 1,
-        "B was not observed while A was absent"
+        "one missing conjunct leaves the explicit projection unchanged"
     );
 
     add(&mut session, "A");
@@ -128,8 +241,8 @@ fn session_memo_hits_keep_side_scans_and_short_circuited_inputs_are_invalidated(
         "observed false-to-true must rebuild"
     );
     assert_eq!(
-        session.stub_inputs[TARGET].1,
-        BTreeMap::from([("Catalog.A".into(), true), ("Catalog.B".into(), true),])
+        session.states[TARGET].spec.property_items["Items"],
+        BTreeSet::from([0])
     );
     assert_fresh_output(&session);
     for key in ["Catalog.A", "Catalog.B"] {
@@ -141,7 +254,7 @@ fn session_memo_hits_keep_side_scans_and_short_circuited_inputs_are_invalidated(
 }
 
 #[test]
-fn session_memo_expands_trace_after_a_and_rebuilds_after_observed_b_changes() {
+fn explicit_projection_memo_waits_for_the_second_conjunct() {
     let (_dir, src) = fixture();
     let cancel = Cancellation::default();
     let selected = BTreeSet::from([ROOT.into()]);
@@ -150,18 +263,16 @@ fn session_memo_expands_trace_after_a_and_rebuilds_after_observed_b_changes() {
     prime(&mut session);
     add(&mut session, "A");
     replay(&mut session);
-    assert_eq!(session.stub_builds[TARGET], 2);
-    assert_eq!(
-        session.stub_inputs[TARGET].1,
-        BTreeMap::from([("Catalog.A".into(), true), ("Catalog.B".into(), false),])
-    );
+    assert_eq!(session.stub_builds[TARGET], 1);
+    assert!(session.states[TARGET].spec.property_items["Items"].is_empty());
     assert_fresh_output(&session);
     add(&mut session, "B");
     replay(&mut session);
-    assert_eq!(session.stub_builds[TARGET], 3);
+    assert_eq!(session.stub_builds[TARGET], 2);
     assert!(
         session.built[TARGET]
-            .output
+            .output()
+            .unwrap()
             .descriptor
             .contains("Catalog.A Catalog.B")
     );
@@ -217,13 +328,15 @@ fn session_memo_does_not_leak_into_a_new_session_after_descriptor_changes() {
     prime(&mut next);
     assert!(
         first.built[TARGET]
-            .output
+            .output()
+            .unwrap()
             .descriptor
             .contains("<Comment>first</Comment>")
     );
     assert!(
         next.built[TARGET]
-            .output
+            .output()
+            .unwrap()
             .descriptor
             .contains("<Comment>second</Comment>")
     );

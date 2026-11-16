@@ -1,22 +1,27 @@
 //! Disposable native builds, complete readback and inventory proof.
 use crate::{
     canonical::sha256,
+    journal::OperationLog,
     source::{canonical_future, no_links, normal_path, relative_path},
-    xml::{Xml, unescape},
 };
-use cf_application::{Cancellation, NativeArtifact, NativeBuilder, NativeRequest};
+use cf_application::{
+    Cancellation, NativeArtifact, NativeBuilder, NativeRequest, ReadbackContract,
+};
 use cf_domain::{BuildMode, Error, Result};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     path::Path,
     process::{Command, Stdio},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-pub struct Native;
+pub struct Native {
+    pub log: Arc<OperationLog>,
+}
 pub struct Outcome {
     pub code: Option<i32>,
     pub timed_out: bool,
@@ -135,117 +140,7 @@ pub fn verify_inventory(
     }
     Ok(())
 }
-fn expanded(name: &str, scope: &BTreeMap<String, String>, attribute: bool) -> Result<String> {
-    if let Some((p, n)) = name.split_once(':') {
-        let uri = scope
-            .get(p)
-            .ok_or_else(|| Error::Invalid("Необъявленный XML namespace".into()))?;
-        Ok(format!("{{{uri}}}{n}"))
-    } else if !attribute && scope.get("").is_some_and(|uri| !uri.is_empty()) {
-        Ok(format!("{{{}}}{name}", scope[""]))
-    } else {
-        Ok(name.into())
-    }
-}
-fn qvalue(value: &str, scope: &BTreeMap<String, String>, preserve: bool) -> Value {
-    if !preserve && value.trim_matches([' ', '\t', '\n', '\r']).is_empty() {
-        return Value::Null;
-    }
-    if let Some((p, n)) = value.split_once(':') {
-        fn qname(s: &str) -> bool {
-            let mut ch = s.chars();
-            ch.next().is_some_and(|c| c == '_' || c.is_alphabetic())
-                && ch.all(|c| c == '_' || c.is_alphanumeric() || matches!(c, '.' | '-'))
-        }
-        if qname(p)
-            && qname(n)
-            && let Some(uri) = scope.get(p)
-        {
-            return json!(["qname", uri, n]);
-        }
-    }
-    json!(["text", value])
-}
-/// Match ElementTree expanded names, QName values and inherited xml:space.
-pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(crate::external)?
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    let x = Xml::parse(text.as_bytes())?;
-    fn node(
-        x: &Xml,
-        id: usize,
-        parent: &BTreeMap<String, String>,
-        inherited: bool,
-    ) -> Result<Value> {
-        let e = &x.elements[id];
-        let mut scope = parent.clone();
-        for a in &e.attributes {
-            if a.name == "xmlns" {
-                scope.insert("".into(), a.value.clone());
-            } else if let Some(p) = a.name.strip_prefix("xmlns:") {
-                scope.insert(p.into(), a.value.clone());
-            }
-        }
-        let preserve = e
-            .attributes
-            .iter()
-            .find(|a| a.name == "xml:space")
-            .map_or(inherited, |a| a.value == "preserve");
-        let mut attrs = BTreeMap::new();
-        for a in &e.attributes {
-            if a.name == "xmlns" || a.name.starts_with("xmlns:") {
-                continue;
-            }
-            let value = unescape(&a.raw.replace(['\t', '\n', '\r'], " "))?;
-            attrs.insert(
-                expanded(&a.name, &scope, true)?,
-                qvalue(&value, &scope, true),
-            );
-        }
-        let mut text_ranges = e.text.iter().peekable();
-        let mut segment = |start: usize, end: usize| -> Result<Value> {
-            let mut value = String::new();
-            while text_ranges.peek().is_some_and(|(r, _)| r.end <= end) {
-                let (r, cdata) = text_ranges.next().expect("peeked text");
-                if r.start >= start {
-                    let t = &x.source[r.clone()];
-                    value.push_str(&if *cdata { t.into() } else { unescape(t)? });
-                }
-            }
-            Ok(qvalue(&value, &scope, preserve))
-        };
-        let head = segment(
-            e.inner.start,
-            e.children
-                .first()
-                .map_or(e.inner.end, |&c| x.elements[c].span.start),
-        )?;
-        let mut children = vec![];
-        for (i, &c) in e.children.iter().enumerate() {
-            let tail = segment(
-                x.elements[c].span.end,
-                e.children
-                    .get(i + 1)
-                    .map_or(e.inner.end, |&n| x.elements[n].span.start),
-            )?;
-            children.push(json!([node(x, c, &scope, preserve)?, tail]));
-        }
-        Ok(json!([
-            expanded(&e.name, &scope, false)?,
-            attrs,
-            head,
-            children
-        ]))
-    }
-    node(
-        &x,
-        x.root,
-        &BTreeMap::from([("xml".into(), "http://www.w3.org/XML/1998/namespace".into())]),
-        false,
-    )
-}
+pub use crate::readback::xml_signature;
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     fs::write(
         path,
@@ -261,13 +156,14 @@ fn log_text(path: &Path) -> String {
 }
 impl NativeBuilder for Native {
     fn build(&self, request: &NativeRequest, cancel: &Cancellation) -> Result<NativeArtifact> {
-        build_with(request, &ProcessRunner, cancel)
+        build_with(request, &ProcessRunner, cancel, &self.log)
     }
 }
 pub fn build_with(
     r: &NativeRequest,
     runner: &dyn Runner,
     cancel: &Cancellation,
+    log: &OperationLog,
 ) -> Result<NativeArtifact> {
     let stage = canonical_future(&r.staging)?;
     let work = canonical_future(&r.work)?;
@@ -302,6 +198,7 @@ pub fn build_with(
         return Err(Error::Invalid("Версия платформы изменилась".into()));
     }
     verify_inventory(&stage, &r.inventory, cancel)?;
+    validate_readback_contract(&stage, &r.inventory, &r.readback, cancel)?;
     let designer = r.mode != BuildMode::Ibcmd;
     fs::create_dir(&work).map_err(crate::external)?;
     let logs = work.join("logs");
@@ -456,38 +353,24 @@ pub fn build_with(
         }
         no_links(&cf)?;
         no_links(&back)?;
-        for rel in r.inventory.keys() {
-            cancel.check()?;
-            if rel.ends_with(".bsl") || rel.ends_with(".xml") {
-                no_links(&back.join(rel))?;
-                let a = fs::read(stage.join(rel)).map_err(crate::external)?;
-                let b = fs::read(back.join(rel)).map_err(crate::external)?;
-                let equal = if rel.ends_with(".bsl") {
-                    a == b
-                } else {
-                    xml_signature(&a)? == xml_signature(&b)?
-                };
-                if !equal {
-                    return Err(Error::Invalid(format!(
-                        "Обратная выгрузка отличается: {rel}"
-                    )));
-                }
-            }
-        }
+        verify_readback(&stage, &back, &r.inventory, &r.readback, cancel, log)?;
         Ok(())
     })();
     let unchanged = verify_inventory(&stage, &r.inventory, &Cancellation::default());
     receipt["stagingUnchanged"] = json!(unchanged.is_ok());
     receipt["seconds"] = json!(now.elapsed().as_secs_f64());
     receipt["finishedUtc"] = json!(chrono::Utc::now().to_rfc3339());
-    let platform_unchanged =
-        if sha256(&fs::read(&r.executable).map_err(crate::external)?) == platform_hash {
-            Ok(())
-        } else {
-            Err(Error::Invalid(
-                "Платформа изменилась во время сборки".into(),
-            ))
-        };
+    let platform_unchanged = fs::read(&r.executable)
+        .map_err(crate::external)
+        .and_then(|bytes| {
+            if sha256(&bytes) == platform_hash {
+                Ok(())
+            } else {
+                Err(Error::Invalid(
+                    "Платформа изменилась во время сборки".into(),
+                ))
+            }
+        });
     let result = result.and(unchanged).and(platform_unchanged);
     receipt["status"] = json!(if result.is_ok() { "passed" } else { "failed" });
     if let Err(e) = &result {
@@ -498,11 +381,156 @@ pub fn build_with(
         receipt["sha256"] = json!(sha256(&bytes));
         receipt["bytes"] = json!(bytes.len());
     }
-    write_json(&work.join("build-receipt.json"), &receipt)?;
-    result.map(|()| NativeArtifact {
+    let receipt_written = write_json(&work.join("build-receipt.json"), &receipt);
+    result.and(receipt_written).map(|()| NativeArtifact {
         path: cf,
         sha256: receipt["sha256"].as_str().unwrap().into(),
     })
+}
+fn validate_readback_contract(
+    stage: &Path,
+    inventory: &BTreeMap<String, String>,
+    contract: &ReadbackContract,
+    cancel: &Cancellation,
+) -> Result<()> {
+    let mut keys = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    if contract
+        .stub_descriptors
+        .values()
+        .any(|key| cf_domain::full_resource(key.kind()))
+        || contract
+            .full_dependencies
+            .values()
+            .any(|key| !cf_domain::full_resource(key.kind()))
+    {
+        return Err(Error::Invalid(
+            "Неверная роль ресурсной зависимости readback".into(),
+        ));
+    }
+    for (path, key) in contract
+        .stub_descriptors
+        .iter()
+        .chain(contract.full_dependencies.iter())
+    {
+        cancel.check()?;
+        relative_path(path)?;
+        if !path.ends_with(".xml")
+            || !inventory.contains_key(path)
+            || !keys.insert(key)
+            || !paths.insert(path)
+        {
+            return Err(Error::Invalid(format!(
+                "Неверная роль descriptor заглушки: {path}"
+            )));
+        }
+        no_links(&stage.join(path))?;
+        crate::readback::validate_stub_descriptor(
+            &fs::read(stage.join(path)).map_err(crate::external)?,
+            key,
+        )?;
+    }
+    Ok(())
+}
+/// Recheck a saved export without invoking 1C. The inventory and role contract
+/// must come from the frozen materialized plan, rather than from the export.
+pub fn verify_saved_readback(
+    stage: &Path,
+    back: &Path,
+    inventory: &BTreeMap<String, String>,
+    contract: &ReadbackContract,
+    cancel: &Cancellation,
+    log: &OperationLog,
+) -> Result<()> {
+    verify_inventory(stage, inventory, cancel)?;
+    validate_readback_contract(stage, inventory, contract, cancel)?;
+    verify_readback(stage, back, inventory, contract, cancel, log)
+}
+fn verify_readback(
+    stage: &Path,
+    back: &Path,
+    inventory: &BTreeMap<String, String>,
+    contract: &ReadbackContract,
+    cancel: &Cancellation,
+    log: &OperationLog,
+) -> Result<()> {
+    for rel in inventory.keys() {
+        cancel.check()?;
+        no_links(&back.join(rel))?;
+        let a = fs::read(stage.join(rel)).map_err(crate::external)?;
+        let after = fs::read(back.join(rel));
+        let xml = rel.ends_with(".xml");
+        let bsl = rel.ends_with(".bsl");
+        let failure = match &after {
+            Err(error) => Some(format!(
+                "Ожидаемый файл отсутствует или недоступен: {error}"
+            )),
+            Ok(b) if bsl => (a != *b).then(|| "Изменилось содержимое BSL".to_owned()),
+            Ok(b) if xml => crate::readback::verify_xml(&a, b, contract.stub_descriptors.get(rel))
+                .err()
+                .map(|e| e.to_string()),
+            Ok(b) => crate::resource_readback::verify(rel, &a, b)
+                .err()
+                .map(|e| e.to_string()),
+        };
+        if let Some(reason) = failure {
+            let original = format!("Обратная выгрузка отличается: {rel}");
+            if bsl && after.is_ok() {
+                let _ = log.value(
+                    "readback-mismatch",
+                    json!({"relativePath":rel,"reason":reason,"saved":false}),
+                );
+                return Err(Error::Invalid(original));
+            }
+            let original = format!("{original}\nПричина: {reason}");
+            let b = after.as_deref().ok();
+            let xml_pair = xml && b.is_some();
+            let saved = if let Some(b) = b.filter(|_| xml) {
+                log.save_readback_pair(&a, b)
+            } else {
+                log.save_readback_resource(&a, b)
+            };
+            let message = match saved {
+                Ok(folder) => {
+                    let event = log.value(
+                            "readback-mismatch",
+                            json!({"relativePath":rel,"directory":folder,"reason":reason,
+                                "stub":contract.stub_descriptors.get(rel).map(|key|&key.0),
+                                "beforeSha256":sha256(&a),"afterSha256":b.map(sha256),
+                                "beforeBytes":a.len(),"afterBytes":b.map(<[u8]>::len),"afterMissing":b.is_none()}),
+                        );
+                    let mut message = if xml_pair {
+                        format!(
+                            "{original}\n\nXML сохранены в папке:\n{}\n\nbefore.xml — перед сборкой; after.xml — после обратной выгрузки.",
+                            normal_path_display(&folder)
+                        )
+                    } else {
+                        format!(
+                            "{original}\n\nРесурсы сохранены в папке:\n{}\n\nbefore.bin — перед сборкой; after.bin — после обратной выгрузки; after-missing.txt — если файл отсутствует или недоступен.",
+                            normal_path_display(&folder)
+                        )
+                    };
+                    if let Err(error) = event {
+                        message
+                            .push_str(&format!("\nНе удалось записать сведения в журнал: {error}"));
+                    }
+                    message
+                }
+                Err(error) => {
+                    let _ = log.value(
+                            "readback-mismatch",
+                            json!({"relativePath":rel,"saved":false,"reason":reason,"error":error.to_string()}),
+                        );
+                    format!(
+                        "{original}\n\nНе удалось сохранить {} в папку журналов: {error}",
+                        if xml_pair { "XML" } else { "ресурсы" }
+                    )
+                }
+            };
+            return Err(Error::Invalid(message));
+        }
+    }
+    Ok(())
 }
 pub fn normal_path_display(p: &Path) -> String {
     let s = p.to_string_lossy();
@@ -512,6 +540,9 @@ pub fn normal_path_display(p: &Path) -> String {
         s.strip_prefix(r"\\?\").unwrap_or(&s).to_owned()
     }
 }
+#[cfg(test)]
+#[path = "native_diagnostics_tests.rs"]
+mod diagnostics_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,7 +567,9 @@ mod tests {
         let b = br#"<R xmlns="one" xmlns:t="two" t:a="t:Type">
         <A>t:T</A>
         </R>"#;
-        assert_eq!(xml_signature(a).unwrap(), xml_signature(b).unwrap());
+        // These arbitrary text/attribute slots are strings, not declared QNames.
+        // Keeping the original pair documents the formerly permissive behavior.
+        assert_ne!(xml_signature(a).unwrap(), xml_signature(b).unwrap());
         assert_ne!(
             xml_signature(b).unwrap(),
             xml_signature(br#"<R xmlns="one"><A>T</A></R>"#).unwrap()

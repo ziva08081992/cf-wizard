@@ -142,6 +142,31 @@ pub(crate) fn source(row: &serde_json::Value, root: &Path, pinned: bool) -> Sour
     }
 }
 fn assert_composition(actual: &Plan, row: &serde_json::Value, context: &str) {
+    // Keep the pinned Python oracle immutable. This separate policy delta was
+    // independently specified by M10/T05 before the adapter implementation.
+    let deltas: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/fixtures/datafrog-legacy-deltas.json"
+    ))
+    .unwrap();
+    let mut expected_stubs = row["stubs"].clone();
+    let mut expected_members = row["members"].clone();
+    if let Some(overrides) = deltas[row["name"].as_str().unwrap()]["additional_members"].as_object()
+    {
+        for (key, values) in overrides {
+            let items = expected_members[key].as_array_mut().unwrap();
+            items.extend(values.as_array().unwrap().iter().cloned());
+            items.sort_by_key(|v| v.as_str().unwrap().to_owned());
+        }
+    }
+    if let Some(overrides) = deltas[row["name"].as_str().unwrap()]["additional_causes"].as_object()
+    {
+        for (key, causes) in overrides {
+            expected_stubs[key]["causes"]
+                .as_array_mut()
+                .unwrap()
+                .extend(causes.as_array().unwrap().iter().cloned());
+        }
+    }
     assert_eq!(
         serde_json::to_value(&actual.selected).unwrap(),
         row["selected"],
@@ -149,12 +174,12 @@ fn assert_composition(actual: &Plan, row: &serde_json::Value, context: &str) {
     );
     assert_eq!(
         serde_json::to_value(&actual.stubs).unwrap(),
-        row["stubs"],
+        expected_stubs,
         "{context}: stubs/causes"
     );
     assert_eq!(
         serde_json::to_value(&actual.members).unwrap(),
-        row["members"],
+        expected_members,
         "{context}: members"
     );
     let warnings: Vec<serde_json::Value> = actual
@@ -237,8 +262,18 @@ fn complete_packages_match_python_with_and_without_the_saved_index() {
                 .write(&src, &excluded, &stage, &settings, &Cancellation::default())
                 .unwrap_or_else(|e| panic!("{label}: write: {e}"));
             assert_composition(&staged.composition, row, &label);
+            staged
+                .readback
+                .validate(&staged.composition, src.catalog(), &staged.files)
+                .unwrap_or_else(|e| panic!("{label}: readback roles: {e}"));
+            for (path, key) in &staged.readback.stub_descriptors {
+                assert!(!staged.composition.selected.contains(&key.0), "{label}");
+                let bytes = fs::read(stage.join(path)).unwrap();
+                crate::readback::verify_xml(&bytes, &bytes, Some(key))
+                    .unwrap_or_else(|e| panic!("{label}: stub projection {path}: {e}"));
+            }
             let actual = inventory(&stage);
-            let expected: BTreeMap<String, Vec<u8>> = row["stage"]
+            let mut expected: BTreeMap<String, Vec<u8>> = row["stage"]
                 .as_object()
                 .unwrap()
                 .iter()
@@ -249,17 +284,47 @@ fn complete_packages_match_python_with_and_without_the_saved_index() {
                     )
                 })
                 .collect();
+            let deltas: serde_json::Value = serde_json::from_slice(include_bytes!(
+                "../../../tests/fixtures/datafrog-legacy-deltas.json"
+            ))
+            .unwrap();
+            if let Some(paths) =
+                deltas[row["name"].as_str().unwrap()]["stage_from_source"].as_array()
+            {
+                for path in paths {
+                    let path = path.as_str().unwrap();
+                    expected.insert(
+                        path.into(),
+                        STANDARD
+                            .decode(row["source"][path].as_str().unwrap())
+                            .unwrap(),
+                    );
+                }
+            }
             assert_eq!(
                 actual.keys().collect::<Vec<_>>(),
                 expected.keys().collect::<Vec<_>>(),
                 "{label}: inventory"
             );
             for (path, data) in actual {
+                let snippet = |bytes: &[u8]| {
+                    let at = data
+                        .iter()
+                        .zip(&expected[&path])
+                        .position(|(left, right)| left != right)
+                        .unwrap_or(data.len().min(expected[&path].len()));
+                    String::from_utf8_lossy(
+                        &bytes[at.saturating_sub(50)..(at + 150).min(bytes.len())],
+                    )
+                    .into_owned()
+                };
                 assert!(
                     data == expected[&path],
-                    "{label}: changed bytes in {path}; actual={} expected={}",
+                    "{label}: changed bytes in {path}; actual={} expected={}; first difference actual={:?} expected={:?}",
                     sha256(&data),
-                    sha256(&expected[&path])
+                    sha256(&expected[&path]),
+                    snippet(&data),
+                    snippet(&expected[&path])
                 );
             }
             assert_eq!(
@@ -269,11 +334,11 @@ fn complete_packages_match_python_with_and_without_the_saved_index() {
             );
             if pinned && row["name"] == "register-resource-and-first-registrar" {
                 assert!(
-                    !src.reads
+                    src.reads
                         .lock()
                         .unwrap()
                         .contains_key("Documents/Ясный.xml"),
-                    "pinned index should avoid rereading unused registrar descriptors"
+                    "V1 has no namespace-aware registrar proof: do not relabel it as the new reader"
                 );
             }
         }

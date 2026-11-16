@@ -227,7 +227,8 @@ impl Model {
             "gitOpenText":if git_ready{"Обновить ветку"}else{"Открыть ветку"},
             "selected":self.selected.iter().map(|k|self.object(k)).collect::<Vec<_>>(),"excluded":self.excluded,"stubTotal":self.plan.as_ref().map_or(0,|p|p.composition().stubs.len()),"busy":self.busy,
             "status":self.status,"statusKind":self.status_kind,"canPreview":!self.selected.is_empty()&&!self.busy&&(git.is_none()||git_ready&&ready),
-            "canBuild":self.plan.is_some()&&self.platform().is_some()&&!self.values["destination"].trim().is_empty()&&!self.busy,
+            "canBuild":self.plan.as_ref().is_some_and(|p|p.composition().complete())&&self.platform().is_some()&&!self.values["destination"].trim().is_empty()&&!self.busy,
+            "dependencyErrors":self.plan.as_ref().map(|p|&p.composition().diagnostics),
             "canMarkStubs":self.plan.is_some()&&!self.busy,"canOpenPackage":self.package.is_some()&&!self.busy,"canOpenJournal":self.last_log.is_some()&&!self.busy,
             "canRefreshIndex":source.is_some()&&!self.busy,"indexExists":index_found,"indexReady":ready,"indexInfo":self.index.as_ref().map(|i|i.info.as_str()).unwrap_or("Индекс ещё не проверен.")})
     }
@@ -564,11 +565,12 @@ impl Model {
             .filter(|i| i.ready)
             .and_then(|i| i.path.clone());
         let selected = self.selected.clone();
+        let excluded = self.excluded.clone();
         self.start("Определяю зависимости…",callback,Some("preview"),move|c,log|{
             let reader=index.map(|path|IndexReader::open(&path,source.manifest().map_or(Proof::Local(source.identity()),Proof::Git))).transpose()?;
-            let plan=RustEngine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&BTreeSet::new(),&c)?;
-            if let Some(log)=log{log.value("dependencies-ready",json!({"selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings}))?;}
-            Ok(Box::new(move|m|{let count=plan.composition().stubs.len();m.plan=Some(plan);m.excluded.clear();m.package=None;m.status=format!("Предпросмотр готов · объектов {} · заглушек {}",m.selected.len(),count);m.status_kind="ok".into();m.signals.push(("stubsChanged".into(),vec![m.stubs()]));}))
+            let plan=RustEngine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&excluded,&c)?;
+            if let Some(log)=log{log.value("dependencies-ready",json!({"kernel":"datafrog-2.0.1","selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings,"diagnostics":plan.composition().diagnostics,"choices":plan.composition().choices,"immediateReasons":plan.composition().reasons.len()}))?;}
+            Ok(Box::new(move|m|{let count=plan.composition().stubs.len();let complete=plan.composition().complete();m.plan=Some(plan);m.package=None;m.status=format!("Предпросмотр {} · объектов {} · заглушек {} · исключено {}",if complete{"готов"}else{"неполный"},m.selected.len(),count,m.excluded.len());m.status_kind=if complete{"ok"}else{"error"}.into();m.signals.push(("stubsChanged".into(),vec![m.stubs()]));}))
         })
     }
     fn build(&mut self, callback: Option<u64>) -> Result<()> {
@@ -615,7 +617,7 @@ impl Model {
                     &options,
                     &cf_application::BuildServices {
                         output: &output,
-                        builder: &cf_infrastructure::native::Native,
+                        builder: &cf_infrastructure::native::Native { log: log.clone() },
                         log: log.as_ref(),
                     },
                     &c,
@@ -806,7 +808,7 @@ impl Model {
             }
             "markStub" if !self.busy=>{
                 let key=field(args,0);let mut excluded=self.excluded.clone();if args[1]==true{excluded.remove(key);}else{excluded.insert(key.into());}
-                self.plan.as_ref().ok_or_else(||Error::Invalid("Выполните предпросмотр".into()))?.composition().validate_exclusions(&excluded)?;
+                self.plan.as_ref().ok_or_else(||Error::Invalid("Выполните предпросмотр".into()))?.validate_exclusions(&excluded)?;
                 self.excluded=excluded;self.package=None;
             }
             "editField" if !self.busy=>{

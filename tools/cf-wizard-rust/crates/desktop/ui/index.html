@@ -120,6 +120,10 @@
 
       <section class="cf-pane cf-package" aria-labelledby="cf-package-title">
         <div class="cf-panel-heading"><h2 id="cf-package-title"><i data-lucide="package" aria-hidden="true"></i>Состав комплекта</h2></div>
+        <div class="cf-task-error" data-dependency-errors role="alert" hidden>
+          <p>Состав неполный. Исправьте ссылки или исключите необязательные заглушки и повторите предпросмотр.</p>
+          <ul data-dependency-error-items></ul>
+        </div>
         <div class="cf-tabs" role="tablist" aria-label="Состав комплекта">
           <button type="button" role="tab" id="cf-whole-tab" aria-controls="cf-whole" aria-selected="true" data-tab="whole">Перенос целиком <span data-whole-count>0</span></button>
           <button type="button" role="tab" id="cf-stubs-tab" aria-controls="cf-stubs" aria-selected="false" data-tab="stubs">Заглушки <span data-stub-count>0</span></button>
