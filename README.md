@@ -4,16 +4,16 @@
 
 Мастер принимает XML-выгрузку из локальной папки или ветки **Gitea / GitHub**. Вы выбираете нужные объекты, проверяете подобранные зависимости и получаете комплект: файл `.cf` и `.merge-settings.xml` с настройками объединения.
 
-**Версия этих исходников — 0.8.8 · Windows x64.** Исправлены группы заглушек, добавлено ограниченное параллельное чтение состава объектов Git и измерения этапов предпросмотра. [Описание локальной версии](docs/releases/v0.8.8.md). Ссылки ниже относятся к опубликованной версии 0.8.7.
+**Версия этих исходников — 0.8.8 · Windows x64.** Исправлены группы заглушек, добавлено ограниченное параллельное чтение состава объектов Git и измерения этапов предпросмотра. [Изменения и проверки](docs/releases/v0.8.8.md).
 
 ## Скачать и начать работу
 
-- [Переносимый комплект 0.8.7: EXE, документация и лицензии](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.7/CF-Wizard-0.8.7-portable.zip)
-- [EXE 0.8.7 отдельно](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.7/CF-Wizard-0.8.7.exe)
-- [Исходники 0.8.7](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.7/CF-Wizard-0.8.7-sources.zip)
-- [Контрольные суммы SHA256](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.7/SHA256SUMS.txt)
+- [Переносимый комплект 0.8.8: EXE, документация и лицензии](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.8/CF-Wizard-0.8.8-portable.zip)
+- [EXE 0.8.8 отдельно](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.8/CF-Wizard-0.8.8.exe)
+- [Исходники 0.8.8](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.8/CF-Wizard-0.8.8-sources.zip)
+- [Контрольные суммы SHA256](https://github.com/ziva08081992/cf-wizard/releases/download/v0.8.8/SHA256SUMS.txt)
 - [Руководство пользователя со скриншотами](docs/user-guide.md), [инструкция Word](docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx?raw=1)
-- [Страница выпуска 0.8.7](https://github.com/ziva08081992/cf-wizard/releases/tag/v0.8.7)
+- [Страница выпуска 0.8.8](https://github.com/ziva08081992/cf-wizard/releases/tag/v0.8.8)
 
 ### Быстрый старт
 
