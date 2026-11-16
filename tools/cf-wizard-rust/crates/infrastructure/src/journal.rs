@@ -70,6 +70,29 @@ impl OperationLog {
         fs::write(&path,serde_json::to_vec_pretty(&json!({"time":chrono::Utc::now().to_rfc3339(),"message":error,"journal":self.path})).map_err(crate::external)?).map_err(crate::external)?;
         Ok(path)
     }
+    pub(crate) fn save_readback_pair(&self, before: &[u8], after: &[u8]) -> Result<PathBuf> {
+        let folder = self.path.parent().unwrap().join("Ошибки");
+        no_links(&folder)?;
+        fs::create_dir_all(&folder).map_err(crate::external)?;
+        persist_readback_pair(&folder, before, after, write_new)
+    }
+    pub(crate) fn save_readback_resource(
+        &self,
+        before: &[u8],
+        after: Option<&[u8]>,
+    ) -> Result<PathBuf> {
+        let folder = self.path.parent().unwrap().join("Ошибки");
+        no_links(&folder)?;
+        fs::create_dir_all(&folder).map_err(crate::external)?;
+        persist_named_pair(&folder, before, after, false, write_new)
+    }
+    #[cfg(test)]
+    pub(crate) fn poison_writer_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _writer = self.writer.lock().unwrap();
+            panic!("simulated journal writer failure");
+        }));
+    }
     pub fn native_files(&self, work: &Path) -> Result<()> {
         let folder = work.join("logs");
         if !folder.is_dir() {
@@ -96,6 +119,53 @@ impl OperationLog {
         }
         Ok(())
     }
+}
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(crate::external)?;
+    file.write_all(bytes).map_err(crate::external)
+}
+fn persist_readback_pair(
+    folder: &Path,
+    before: &[u8],
+    after: &[u8],
+    write: impl FnMut(&Path, &[u8]) -> Result<()>,
+) -> Result<PathBuf> {
+    persist_named_pair(folder, before, Some(after), true, write)
+}
+fn persist_named_pair(
+    folder: &Path,
+    before: &[u8],
+    after: Option<&[u8]>,
+    xml: bool,
+    mut write: impl FnMut(&Path, &[u8]) -> Result<()>,
+) -> Result<PathBuf> {
+    let draft = tempfile::Builder::new()
+        .prefix("readback-")
+        .tempdir_in(folder)
+        .map_err(crate::external)?;
+    write(
+        &draft
+            .path()
+            .join(if xml { "before.xml" } else { "before.bin" }),
+        before,
+    )?;
+    match after {
+        Some(bytes) => write(
+            &draft
+                .path()
+                .join(if xml { "after.xml" } else { "after.bin" }),
+            bytes,
+        )?,
+        None => write(
+            &draft.path().join("after-missing.txt"),
+            b"The expected readback file is missing or unreadable; see the operation journal.",
+        )?,
+    }
+    Ok(draft.keep())
 }
 impl Journal for OperationLog {
     fn event(&self, operation: &str, fields: &BTreeMap<String, String>) -> Result<()> {
@@ -153,5 +223,18 @@ mod tests {
             log.value("example", json!({"текст":"проверка"})).unwrap();
         }
         assert!(read(&path).unwrap().contains("проверка"));
+    }
+    #[test]
+    fn partial_readback_pair_is_removed_if_the_second_write_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = persist_readback_pair(temp.path(), b"before", b"after", |path, bytes| {
+            if path.file_name().unwrap() == "after.xml" {
+                write_new(path, b"partial")?;
+                return Err(cf_domain::Error::External("simulated disk full".into()));
+            }
+            write_new(path, bytes)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 }

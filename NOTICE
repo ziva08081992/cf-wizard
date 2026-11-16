@@ -1,0 +1,136 @@
+CF Wizard — NOTICE
+==================
+
+Copyright (c) 2026 CF Wizard contributors
+
+Для собственного кода CF Wizard выбрана MIT; текст находится в LICENSE.
+Область действия, сторонние части и открытые вопросы прав описаны в
+LICENSING.md. Этот файл сохраняет происхождение и отдельные уведомления;
+он не предоставляет отсутствующие права на чужую реализацию и не заменяет
+полный комплект лицензий всех включённых зависимостей.
+
+Происхождение движка
+-------------------
+
+Автору alonehobo и проекту 1c-partial-cf — благодарность за Python-скрипт
+partial_cf.py и исходный алгоритм подготовки технической конфигурации.
+Начальная реализация была перенесена на Rust с сохранением совместимости.
+В версии 0.8.5 рабочее замыкание заменено новой реализацией на Datafrog.
+В той версии часть читателей, проектора XML и генератора настроек объединения
+сохраняла происхождение из переноса. В кандидате 0.8.6 рабочие readers,
+compiler и guards заменены собственными прикладными компонентами; старые
+producers сохранены только для offline tests. Конечные compatibility rules
+и нормативные значения сохраняют историческую преемственность.
+Карта компонентов: docs/architecture/provenance.md и docs/architecture/owned-source-profile.md.
+Python-helper не запускается в текущем EXE. Clean-room происхождение
+всего проекта не заявляется.
+
+Upstream: https://github.com/alonehobo/1c-partial-cf
+Закреплённый commit: 8cc8aff3705dd91100555851d398ae91a192e23d
+Исходный файл: 1c-partial-cf/scripts/partial_cf.py
+SHA256 helper, записанный при переносе:
+efe67eda5f95475757efefd75c979d8144ffd7480934307db487155c87ea5699
+
+Commit и checksum приведены в tools/cf-wizard-rust/README.md.
+На 15.11.2026 в проверенном дереве закреплённой версии отдельная лицензия
+не обнаружена; GitHub API upstream вернул license:null. Достаточность прав
+на заимствованные части ещё требует уточнения. Благодарность и MIT для
+собственного кода не являются разрешением правообладателя исходника.
+
+Datafrog — вычислительное ядро замыкания требований
+------------------------------------------------
+
+Используется Datafrog 2.0.1, библиотека Rust для инкрементального
+положительного fixed point (semi-naive evaluation). Вклад авторов:
+Frank McSherry, The Rust Project Developers и Datafrog Developers.
+Источник: https://github.com/rust-lang/datafrog
+Commit опубликованного crate: 9cc6b5d8e29037dc1a199420d63708b734b6cc6e
+Checksum crates.io:
+a0afaad2b26fa326569eb264b1363e8ae3357618c43982b3f285f0774ce76b69
+
+В метаданных источника указано Apache-2.0/MIT; для этой зависимости
+используется MIT-вариант. Оба оригинальных текста сохранены в
+docs/licenses/datafrog-2.0.1/LICENSE-MIT и LICENSE-APACHE.
+Datafrog предоставляет механизм fixed point/dedup/join, но не правила 1С,
+читатели файлов, структурные альтернативы или XML-проекцию CF Wizard.
+Замена вычислителя не устраняет автоматически вопросы происхождения
+других частей проекта, указанные выше и в LICENSING.md.
+
+Lucide — пиктограммы интерфейса
+------------------------------
+
+В интерфейсе используется Lucide 0.468.0. Следующий текст сохранён из
+LICENSE этой версии без изменения условий:
+https://github.com/lucide-icons/lucide/blob/0.468.0/LICENSE
+
+ISC License
+
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+SQLite — постоянный индекс зависимостей
+--------------------------------------
+
+SQLite используется как встраиваемая база для индекса. Авторы передали
+поставляемый код SQLite в public domain; Rust-обёртки rusqlite и
+libsqlite3-sys сохраняют собственные MIT-условия. Условия обёрток не
+определяются статусом самого SQLite.
+
+SQLite: https://www.sqlite.org/copyright.html
+Rust-обёртки: https://github.com/rusqlite/rusqlite
+
+WebView2 Rust bindings
+---------------------
+
+Оконная оболочка использует привязки webview2-rs. Для webview2-com,
+webview2-com-macros и webview2-com-sys сохранено официальное MIT-уведомление
+upstream; версии конкретной поставки определяет Cargo.lock.
+https://github.com/wravery/webview2-rs/blob/main/LICENSE
+
+MIT License
+
+Copyright (c) 2021 Bill Avery
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Другие зависимости и документация
+--------------------------------
+
+Условия остальных Rust-зависимостей сохраняются отдельно. Их лицензии
+указаны в исходных пакетах; закреплённые версии находятся в
+tools/cf-wizard-rust/Cargo.lock. Перечисленные здесь уведомления не
+объявляют весь сторонний код перелицензированным под MIT.
+
+Примером разделения README, NOTICE и LICENSING.md послужило оформление
+https://github.com/itrous/bsl-analyzer . Это ссылка на структуру
+документации; использование кода анализатора в мастере не заявляется.
+
+
+В0.8.7 собственные Windows metadata wrappers оптимизированы по опубликованному Microsoft API contract; новый third-party code/dependency не добавлялся. Ancestor/proof/XML проверки сохранены. Это не снимает прежних вопросов происхождения и публичного распространения.

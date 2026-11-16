@@ -3,6 +3,8 @@ use crate::engine::tests::{rows, source};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cf_application::FactStore;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "indexing_semantic_tests.rs"]
+mod semantic_tests;
 
 fn row(name: &str) -> serde_json::Value {
     rows()["cases"]
@@ -148,7 +150,7 @@ fn persistent_git_index_reuses_after_restart_and_only_reads_the_xml_delta() {
     );
 }
 #[test]
-fn old_python_index_is_read_without_writes_and_imported_on_explicit_update() {
+fn v1_stays_read_only_and_explicit_update_builds_separate_source_facts() {
     let temp = tempfile::tempdir().unwrap();
     let src = source(
         &row("all-composite-types"),
@@ -169,16 +171,28 @@ fn old_python_index_is_read_without_writes_and_imported_on_explicit_update() {
     let bytes = fs::read(&legacy).unwrap();
     let modified = legacy.metadata().unwrap().modified().unwrap();
     let before = status(&src, &folder).unwrap();
-    assert!(before.ready);
-    assert_eq!(
-        fs::canonicalize(before.path.as_ref().unwrap()).unwrap(),
-        fs::canonicalize(&legacy).unwrap()
+    assert!(before.found);
+    assert!(
+        !before.ready,
+        "V1 has no origin/coverage/reader semantics proof"
     );
+    assert!(before.path.is_none());
     assert!(!before.preferred.exists());
     let migrated = update(&src, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
     assert!(migrated.migrated);
-    assert_eq!(migrated.xml_reads, 0);
-    assert!(src.reads.lock().unwrap().is_empty());
+    assert!(
+        migrated.xml_reads > 0,
+        "migration must execute the new reader once"
+    );
+    let reads = src.reads.lock().unwrap();
+    for object in src.catalog().objects.values() {
+        assert!(
+            reads.contains_key(&object.descriptor),
+            "new facts must not be relabelled V1: {}",
+            object.descriptor
+        );
+    }
+    drop(reads);
     assert_eq!(bytes, fs::read(&legacy).unwrap());
     assert_eq!(modified, legacy.metadata().unwrap().modified().unwrap());
     assert!(status(&src, &folder).unwrap().ready);

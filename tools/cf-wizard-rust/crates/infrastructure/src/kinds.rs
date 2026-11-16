@@ -308,3 +308,4 @@ pub const RESOURCE_SUFFIXES: &[&str] = &[
     "Приход",
     "Расход",
 ];
+pub(crate) use cf_domain::full_resource;

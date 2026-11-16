@@ -216,6 +216,8 @@ html, body { height: 100%; margin: 0; background: #1e1f22; }
 #cf-wizard-preview .cf-help ol { padding-left: 22px; }
 #cf-wizard-preview .cf-help li { margin-bottom: 8px; }
 #cf-wizard-preview .cf-status-dot.cf-error { background: #e48b83; }
+#cf-wizard-preview [data-dependency-errors] { max-height: 12rem; overflow: auto; overflow-wrap: anywhere; margin: 8px 10px; }
+#cf-wizard-preview [data-dependency-errors] p { margin: 0 0 6px; }
 #cf-wizard-preview .cf-more { margin: 5px 10px 5px 26px; font-size: 11px; }
 @media (max-width: 710px) {
   #cf-wizard-preview .cf-window { display: block; height: auto; }

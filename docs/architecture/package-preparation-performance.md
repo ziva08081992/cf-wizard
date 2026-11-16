@@ -1,0 +1,19 @@
+# Стоимость подготовки XML-комплекта — 0.8.7
+
+Причинная диагностика обнаружила повторные Windows metadata queries, а не недостаток Datafrog или необходимость кэшировать XML. В инструментированном baseline на metadata wrappers приходилось 72–74% времени; повторное чтение Copy/Project занимало около 3,58 мс. В 0.8.7 постоянный кэш байтов или атрибутов не добавлялся.
+
+`no_links` по-прежнему проверяет каждый ancestor. Для синтаксически абсолютных Disk/VerbatimDisk paths используется GetFileAttributesExW, возвращающий атрибуты самой ссылки. Любая ошибка вызывает прежний `symlink_metadata`; UNC, device namespaces и relative paths сразу используют прежнюю ветку. Физический тип тома не определяется: mapped drive может иметь Disk prefix. Нельзя распространять результат на все сетевые пути.
+
+В source GetFileAttributesW сохраняется. Только raw errors 2/3 на абсолютном VerbatimDisk возвращаются непосредственно, без второго metadata query. GetLastError захватывается сразу после ошибки API. Все остальные ошибки/prefixes проходят прежний fallback. После отсутствующего leaf обход родителей продолжается; результаты не запоминаются.
+
+Basic GetFileAttributesW не перенесён в публичный output guard: например, NUL может выглядеть в нём как существующий файл. ExW с fallback сохраняет стандартную ошибку. ABI: extern system, BOOL/enum i32, repr(C) WIN32_FILE_ATTRIBUTE_DATA = 9 DWORD = 36 байт. Реализация опирается на [GetFileAttributesW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileattributesw), [GetFileAttributesExW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileattributesexw) и [структуру данных](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-win32_file_attribute_data).
+
+Source proofs до/после materialization, fresh reads/hashes, ancestor/reparse checks, pinned Git identity и независимое чтение фактического staging остались на прежних checkpoints. Strict XML/QName checks, frozen projection/package/merge plans, settings/readback roles и независимые fixtures сохранены. Semantic/cache versions не изменены.
+
+Сложность guard остаётся O(A·L): A — число ancestor steps, L — длина кодируемого пути. Дополнительная память ограничена временным UTF-16 buffer O(L) и 36 байтами ExW. Удалены дублирующие queries, а не проверки предков. Унаследованная TOCTOU-природа pathname checks не устранена; атомарная защита от произвольной конкурентной замены дерева не заявляется.
+
+Реальные junction/long paths/aliases/exclusive-open cases и injected errors/reparse flags проверены. Real file/directory symlink недоступны из-за WinError1314; это не passed controls. Valid UNC, mapped SMB drive и фактический ACL AccessDenied отдельно не воспроизведены; injected error5 покрывает fallback routing. Успех на изменённых ACL не выдаётся за отрицательный AccessDenied case.
+
+Индекс хранит извлечённые факты, но не отменяет текущую проверку файлов и источника перед выпуском. Поэтому маленький одноразовый комплект может стоить с индексом больше: добавляется чтение/проверка индексированных фактов, а обязательные source/output proofs остаются. Основной benchmark исключает initial/update/open индекса, но включает завершающий SQLite hash. Это не время открытия приложения и не время Designer/ibcmd. Практический выигрыш индекса зависит от масштаба и повторного использования.
+
+Первоначальные длинные batches имели большой разброс записи/планирования ОС, причина отдельных выбросов не установлена. Итоговое сравнение использует 3×9 соседних AB/BA пар на режим, один warmup и один измеряемый sample на процесс, без фоновых сборок этого чата. Metadata-only контроль выполняет те же обходы без timed writes. Inclusive phase/probe times не складываются как exclusive CPU. Полные цифры и ограничения — в [приёмке](../reports/cf-wizard-0.8.7-acceptance.md).

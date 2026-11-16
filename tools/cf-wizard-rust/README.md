@@ -1,4 +1,6 @@
-# CF Wizard · Rust 0.8.0-rust.2
+# CF Wizard · Rust 0.8.7
+
+Прикладные source readers, frozen projection/package/merge compiler и независимые guards описаны в [профиле ядра](../../docs/architecture/owned-source-profile.md). Старые producers используются только в offline compatibility tests. После смены semantic versions прежний индекс требует явного обновления; предпросмотр его не переписывает. [Изменения и фактические границы проверок](../../docs/releases/v0.8.7.md).
 
 Пилотная Windows-программа для создания технической **CF** из локальной XML-выгрузки или файлов выбранной ветки Gitea/GitHub. Движок, SQLite, Git, хранение токенов, сборка и управление окном перенесены на Rust. HTML/CSS/JavaScript отвечают за отображение. Python и Qt при работе EXE не используются.
 

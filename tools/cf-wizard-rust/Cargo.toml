@@ -2,10 +2,12 @@
 members = ["crates/domain", "crates/application", "crates/infrastructure", "crates/desktop"]
 resolver = "3"
 [workspace.package]
-version = "0.8.0-rust.2"
+version = "0.8.7"
 edition = "2024"
+license = "MIT"
 publish = false
 [workspace.dependencies]
+datafrog = "=2.0.1"
 cf-domain = { path = "crates/domain" }
 cf-application = { path = "crates/application" }
 cf-infrastructure = { path = "crates/infrastructure" }
@@ -17,6 +19,7 @@ hex = "0.4"
 thiserror = "2"
 xmlparser = "0.13.6"
 flate2 = "1"
+zip = { version = "=9.5.1", default-features = false, features = ["deflate-flate2"] }
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "query", "native-tls", "system-proxy"] }
 regex = "1"

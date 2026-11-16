@@ -4,16 +4,18 @@
 mod tests;
 use crate::{
     canonical::{GitInputs, InputEntry, sha256},
-    engine::{metadata_listing, records_fragment},
-    index::{
-        APPLICATION_ID, FACTS_CONTRACT, IndexReader, LEGACY_HELPER, Proof, encode_facts, header,
-        read_manifest,
-    },
-    metadata::{extract_facts, scan},
+    engine::metadata_listing,
+    facts_cache,
+    index::{APPLICATION_ID, IndexReader, Proof, header, read_manifest, validate_owned_semantics},
+    registrar_facts,
     source::{no_links, normal_path},
+    source_reader::SourceDocument,
 };
 use cf_application::{Cancellation, MetadataSource};
-use cf_domain::{Error, Result};
+use cf_domain::{
+    Error, Result,
+    source_facts::{FactVersions, RULE_PROFILE, SourceProof},
+};
 use rusqlite::{Connection, OpenFlags, params};
 use serde::Serialize;
 use sha1::Sha1;
@@ -29,7 +31,9 @@ const SCHEMA:&str="
 PRAGMA application_id=1128679768;
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS objects(name TEXT PRIMARY KEY,content_hash BLOB NOT NULL,facts BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS object_semantics(name TEXT PRIMARY KEY,signature TEXT NOT NULL,FOREIGN KEY(name) REFERENCES objects(name) ON DELETE CASCADE) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS documents(file TEXT PRIMARY KEY,records_hash BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS document_semantics(file TEXT PRIMARY KEY,signature TEXT NOT NULL,FOREIGN KEY(file) REFERENCES documents(file) ON DELETE CASCADE) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS registrar_links(file TEXT,ordinal INTEGER,target TEXT NOT NULL,PRIMARY KEY(file,ordinal),FOREIGN KEY(file) REFERENCES documents(file) ON DELETE CASCADE) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS registrars_by_target ON registrar_links(target,file,ordinal);
 CREATE TABLE IF NOT EXISTS git_inputs(path TEXT PRIMARY KEY,oid TEXT NOT NULL,size INTEGER NOT NULL,owner TEXT NOT NULL,roles TEXT NOT NULL) WITHOUT ROWID;
@@ -55,6 +59,8 @@ pub struct IndexUpdate {
     pub input_changed: usize,
     pub reused_inputs: usize,
     pub xml_reads: usize,
+    pub metadata_parses: usize,
+    pub registrar_parses: usize,
     pub registrars_changed: usize,
     pub migrated: bool,
     pub bytes: u64,
@@ -86,7 +92,7 @@ pub fn path_for(source: &dyn MetadataSource, directory: &Path) -> Result<PathBuf
         .map_or_else(|| source.identity(), |m| m.source_key.as_str());
     let name = source.catalog().name.chars().take(64).collect::<String>();
     Ok(folder.join(format!(
-        "{name}-{}.rust.sqlite3",
+        "{name}-{}.source-facts-v2.sqlite3",
         &sha256(identity.as_bytes())[..20]
     )))
 }
@@ -138,12 +144,9 @@ fn readonly(path: &Path) -> Result<Connection> {
     Ok(db)
 }
 fn supported(meta: &BTreeMap<String, String>) -> bool {
-    meta.get("schema").map(String::as_str) == Some("1")
-        && meta.get("helper").map(String::as_str) == Some(LEGACY_HELPER)
-        && meta.get("engine").is_none_or(|v| v == "cf-wizard-rust")
-        && meta
-            .get("facts_contract")
-            .is_none_or(|v| v == FACTS_CONTRACT)
+    meta.get("schema").map(String::as_str) == Some("2")
+        && meta.get("engine").map(String::as_str) == Some("cf-wizard-rust")
+        && meta.get("facts_contract").map(String::as_str) == Some(facts_cache::CONTRACT)
 }
 fn origin(meta: &BTreeMap<String, String>, source: &dyn MetadataSource) -> bool {
     if let Some(inputs) = source.manifest() {
@@ -333,6 +336,19 @@ fn hashes(db: &Connection, table: &str) -> Result<BTreeMap<String, Vec<u8>>> {
         .collect::<rusqlite::Result<_>>()
         .map_err(crate::external)
 }
+fn usable_rows(db: &Connection, descriptor: bool, signature: &str) -> Result<BTreeSet<String>> {
+    let sql = if descriptor {
+        "SELECT name FROM object_semantics WHERE signature=?"
+    } else {
+        "SELECT file FROM document_semantics WHERE signature=?"
+    };
+    let mut query = db.prepare(sql).map_err(crate::external)?;
+    query
+        .query_map([signature], |row| row.get(0))
+        .map_err(crate::external)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(crate::external)
+}
 fn verify_blob(entry: &InputEntry, bytes: &[u8]) -> Result<()> {
     if bytes.len() as u64 != entry.size {
         return Err(Error::Invalid(format!(
@@ -366,6 +382,20 @@ pub fn update(
     cancel: &Cancellation,
     progress: &dyn Fn(usize, usize),
 ) -> Result<IndexUpdate> {
+    update_core(source, directory, cancel, progress, |_| {})
+}
+#[derive(Clone, Copy)]
+enum PublicationPoint {
+    BeforeCommit,
+    AfterCommit,
+}
+fn update_core(
+    source: &dyn MetadataSource,
+    directory: &Path,
+    cancel: &Cancellation,
+    progress: &dyn Fn(usize, usize),
+    publication_hook: impl Fn(PublicationPoint),
+) -> Result<IndexUpdate> {
     cancel.check()?;
     let proof = source.snapshot(cancel)?;
     let path = path_for(source, directory)?;
@@ -386,6 +416,9 @@ pub fn update(
         .map_err(|_| Error::Invalid("Индекс обновляется в другом процессе".into()))?;
     let before = stamp(&path)?;
     let rows = inputs(source, cancel)?;
+    let versions = FactVersions::current();
+    let object_signature = facts_cache::signature(&versions, facts_cache::OBJECT_FACETS)?;
+    let registrar_signature = facts_cache::signature(&versions, facts_cache::REGISTRAR_FACETS)?;
     let mut report = IndexUpdate {
         path: path.clone(),
         inputs: rows.len(),
@@ -401,6 +434,7 @@ pub fn update(
         }
         if let Some(inputs) = source.manifest()
             && supported(&meta)
+            && validate_owned_semantics(&db, &meta).is_ok()
             && read_manifest(&db, &meta)
                 .is_ok_and(|old| old.fingerprint().ok() == inputs.fingerprint().ok())
             && complete(&db, inputs)?
@@ -427,7 +461,14 @@ pub fn update(
         let Ok(meta) = header(&db) else {
             continue;
         };
-        if !supported(&meta) || !origin(&meta, source) {
+        if !origin(&meta, source) {
+            continue;
+        }
+        if !supported(&meta) {
+            // V1 remains immutable. It can identify the source, not supply V2 extraction.
+            if meta.get("schema").map(String::as_str) == Some("1") {
+                report.migrated = true;
+            }
             continue;
         }
         let manifest = if meta.contains_key("git_manifest") {
@@ -455,6 +496,8 @@ pub fn update(
     db.execute_batch(SCHEMA).map_err(crate::external)?;
     let known = hashes(&db, "objects")?;
     let documents = hashes(&db, "documents")?;
+    let usable_objects = usable_rows(&db, true, &object_signature)?;
+    let usable_documents = usable_rows(&db, false, &registrar_signature)?;
     let old: BTreeMap<_, _> = old_inputs
         .as_ref()
         .map(|i| {
@@ -477,8 +520,8 @@ pub fn update(
             let descriptor = e.roles.split(',').any(|r| r == "descriptor");
             let registrar = e.roles.split(',').any(|r| r == "registrar");
             let filename = e.path.rsplit('/').next().expect("path");
-            let complete = (!descriptor || known.contains_key(&e.owner))
-                && (!registrar || documents.contains_key(filename));
+            let complete = (!descriptor || usable_objects.contains(&e.owner))
+                && (!registrar || usable_documents.contains(filename));
             (descriptor || registrar)
                 && !(source.manifest().is_some() && old.get(&e.path) == Some(*e) && complete)
         })
@@ -516,8 +559,8 @@ pub fn update(
         let descriptor = entry.roles.split(',').any(|r| r == "descriptor");
         let registrar = entry.roles.split(',').any(|r| r == "registrar");
         let filename = entry.path.rsplit('/').next().expect("path");
-        let complete_row = (!descriptor || known.contains_key(&entry.owner))
-            && (!registrar || documents.contains_key(filename));
+        let complete_row = (!descriptor || usable_objects.contains(&entry.owner))
+            && (!registrar || usable_documents.contains(filename));
         if source.manifest().is_some() && old.get(&entry.path) == Some(entry) && complete_row {
             report.reused_inputs += 1;
             if descriptor {
@@ -536,13 +579,33 @@ pub fn update(
             verify_blob(entry, &data)?;
         }
         report.xml_reads += 1;
+        let descriptor_digest = Sha256::digest(&data).to_vec();
+        let descriptor_changed = descriptor
+            && (known.get(&entry.owner) != Some(&descriptor_digest)
+                || !usable_objects.contains(&entry.owner));
+        let parsed = if descriptor_changed {
+            report.metadata_parses += 1;
+            Some(SourceDocument::descriptor(
+                &entry.owner,
+                &entry.path,
+                &data,
+                SourceProof {
+                    identity: source.identity().into(),
+                    snapshot: proof.clone(),
+                    inputs: BTreeMap::new(),
+                },
+            )?)
+        } else {
+            None
+        };
         if descriptor {
-            let digest = Sha256::digest(&data).to_vec();
-            if known.get(&entry.owner) == Some(&digest) {
+            if !descriptor_changed {
                 report.unchanged += 1;
             } else {
-                let facts = encode_facts(&extract_facts(&data)?)?;
-                transaction.execute("INSERT INTO objects VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET content_hash=excluded.content_hash,facts=excluded.facts",params![&entry.owner,&digest,&facts]).map_err(crate::external)?;
+                let facts =
+                    facts_cache::encode(&parsed.as_ref().expect("parsed descriptor").facts)?;
+                transaction.execute("INSERT INTO objects VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET content_hash=excluded.content_hash,facts=excluded.facts",params![&entry.owner,&descriptor_digest,&facts]).map_err(crate::external)?;
+                transaction.execute("INSERT INTO object_semantics VALUES (?,?) ON CONFLICT(name) DO UPDATE SET signature=excluded.signature", params![&entry.owner, &object_signature]).map_err(crate::external)?;
                 if known.contains_key(&entry.owner) {
                     report.changed += 1;
                 } else {
@@ -551,25 +614,28 @@ pub fn update(
             }
         }
         if registrar {
-            let fragment = records_fragment(&data);
-            let digest = Sha256::digest(fragment).to_vec();
-            if documents.get(filename) != Some(&digest) {
+            let registrations = if let Some(document) = parsed.as_ref() {
+                registrar_facts::from_view(&document.view, document.object)?
+            } else {
+                report.registrar_parses += 1;
+                registrar_facts::extract(&data)?
+            };
+            if documents.get(filename) != Some(&registrations.hash)
+                || !usable_documents.contains(filename)
+            {
                 transaction
                     .execute("DELETE FROM registrar_links WHERE file=?", [filename])
                     .map_err(crate::external)?;
-                transaction.execute("INSERT INTO documents VALUES (?,?) ON CONFLICT(file) DO UPDATE SET records_hash=excluded.records_hash",params![filename,digest]).map_err(crate::external)?;
-                for (ordinal, reference) in
-                    scan(std::str::from_utf8(fragment).map_err(crate::external)?)
-                        .into_iter()
-                        .enumerate()
-                {
+                transaction.execute("INSERT INTO documents VALUES (?,?) ON CONFLICT(file) DO UPDATE SET records_hash=excluded.records_hash",params![filename,&registrations.hash]).map_err(crate::external)?;
+                for (ordinal, target) in registrations.links {
                     transaction
                         .execute(
                             "INSERT INTO registrar_links VALUES (?,?,?)",
-                            params![filename, ordinal as u64, reference.key()],
+                            params![filename, ordinal as u64, target],
                         )
                         .map_err(crate::external)?;
                 }
+                transaction.execute("INSERT INTO document_semantics VALUES (?,?) ON CONFLICT(file) DO UPDATE SET signature=excluded.signature", params![filename, &registrar_signature]).map_err(crate::external)?;
                 report.registrars_changed += 1;
             }
         }
@@ -601,11 +667,11 @@ pub fn update(
         }
     }
     for (key, value) in [
-        ("schema", "1"),
+        ("schema", "2"),
         ("source", source.identity()),
-        ("helper", LEGACY_HELPER),
         ("engine", "cf-wizard-rust"),
-        ("facts_contract", FACTS_CONTRACT),
+        ("facts_contract", facts_cache::CONTRACT),
+        ("rule_profile", RULE_PROFILE),
     ] {
         transaction
             .execute(
@@ -614,6 +680,15 @@ pub fn update(
             )
             .map_err(crate::external)?;
     }
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO metadata VALUES (?,?)",
+            params![
+                "reader_versions",
+                serde_json::to_string(&versions).map_err(crate::external)?
+            ],
+        )
+        .map_err(crate::external)?;
     if source.snapshot(cancel)? != proof {
         return Err(Error::Invalid(
             "Исходники изменились во время обновления индекса".into(),
@@ -632,15 +707,21 @@ pub fn update(
     {
         return Err(Error::Invalid("Создан неполный индекс Git".into()));
     }
+    validate_owned_semantics(&db, &header(&db)?)?;
     drop(db);
     if stamp(&path)? != before {
         return Err(Error::Invalid(
             "Индекс изменился в другом окне; повторите обновление".into(),
         ));
     }
+    report.bytes = fs::metadata(&draft).map_err(crate::external)?.len();
+    // Publication starts after this final cancellation checkpoint. A late request
+    // cannot retroactively report a successfully replaced index as Cancelled.
+    publication_hook(PublicationPoint::BeforeCommit);
+    cancel.check()?;
     draft.persist(&path).map_err(crate::external)?;
-    report.bytes = fs::metadata(&path).map_err(crate::external)?.len();
-    fs2::FileExt::unlock(&lock).map_err(crate::external)?;
+    drop(lock);
+    publication_hook(PublicationPoint::AfterCommit);
     Ok(report)
 }
 fn foreign_keys_valid(db: &Connection) -> Result<bool> {

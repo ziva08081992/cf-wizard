@@ -1,6 +1,8 @@
 //! Read/import the verified v1 facts contract without executing its Python producer.
 use crate::canonical::{GitInputs, InputEntry, ascii_json};
+use crate::facts_cache;
 use cf_application::FactStore;
+use cf_domain::source_facts::{FactVersions, SourceFacts};
 use cf_domain::{Error, Facts, Member, Result};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -157,9 +159,57 @@ pub fn read_manifest(db: &Connection, meta: &BTreeMap<String, String>) -> Result
     }
     Ok(manifest)
 }
+pub(crate) fn validate_owned_semantics(
+    db: &Connection,
+    meta: &BTreeMap<String, String>,
+) -> Result<()> {
+    if meta.get("schema").map(String::as_str) != Some("2")
+        || meta.get("engine").map(String::as_str) != Some("cf-wizard-rust")
+        || meta.get("facts_contract").map(String::as_str) != Some(facts_cache::CONTRACT)
+    {
+        return Err(invalid("Неизвестный owned SourceFacts cache contract"));
+    }
+    let stored: FactVersions = serde_json::from_str(
+        meta.get("reader_versions")
+            .ok_or_else(|| invalid("Нет версии SourceFacts readers"))?,
+    )
+    .map_err(crate::external)?;
+    let current = FactVersions::current();
+    if facts_cache::OBJECT_FACETS
+        .iter()
+        .chain(facts_cache::REGISTRAR_FACETS)
+        .any(|facet| !stored.compatible(&current, *facet))
+    {
+        return Err(invalid(
+            "Изменилась семантика читателя: обновите индекс по кнопке",
+        ));
+    }
+    for (sql, facets) in [
+        (
+            "SELECT COUNT(*) FROM objects AS o LEFT JOIN object_semantics AS s ON s.name=o.name WHERE s.signature IS NULL OR s.signature<>?",
+            facts_cache::OBJECT_FACETS,
+        ),
+        (
+            "SELECT COUNT(*) FROM documents AS d LEFT JOIN document_semantics AS s ON s.file=d.file WHERE s.signature IS NULL OR s.signature<>?",
+            facts_cache::REGISTRAR_FACETS,
+        ),
+    ] {
+        let signature = facts_cache::signature(&current, facets)?;
+        let stale: u64 = db
+            .query_row(sql, [signature], |row| row.get(0))
+            .map_err(crate::external)?;
+        if stale != 0 {
+            return Err(invalid(
+                "В SQLite остались устаревшие facets: обновите индекс по кнопке",
+            ));
+        }
+    }
+    Ok(())
+}
 pub struct IndexReader {
     db: Connection,
     pinned: bool,
+    owned: bool,
 }
 impl IndexReader {
     pub fn open(path: &Path, proof: Proof<'_>) -> Result<Self> {
@@ -172,17 +222,23 @@ impl IndexReader {
             .map_err(crate::external)?;
         integrity(&db)?;
         let meta = header(&db)?;
-        if meta.get("schema").map(String::as_str) != Some("1")
-            || meta.get("helper").map(String::as_str) != Some(LEGACY_HELPER)
-        {
-            return Err(invalid("Неизвестный формат или версия алгоритма SQLite"));
-        }
-        if meta.get("engine").is_some_and(|s| s != "cf-wizard-rust")
-            || meta
-                .get("facts_contract")
-                .is_some_and(|s| s != FACTS_CONTRACT)
-        {
-            return Err(invalid("Неизвестный контракт Rust facts"));
+        let owned = meta.get("schema").map(String::as_str) == Some("2")
+            && meta.get("facts_contract").map(String::as_str) == Some(facts_cache::CONTRACT);
+        if owned {
+            validate_owned_semantics(&db, &meta)?;
+        } else {
+            if meta.get("schema").map(String::as_str) != Some("1")
+                || meta.get("helper").map(String::as_str) != Some(LEGACY_HELPER)
+            {
+                return Err(invalid("Неизвестный формат или версия алгоритма SQLite"));
+            }
+            if meta.get("engine").is_some_and(|s| s != "cf-wizard-rust")
+                || meta
+                    .get("facts_contract")
+                    .is_some_and(|s| s != FACTS_CONTRACT)
+            {
+                return Err(invalid("Неизвестный контракт Rust facts"));
+            }
         }
         let pinned = match proof {
             Proof::Local(identity) => {
@@ -203,11 +259,56 @@ impl IndexReader {
                 true
             }
         };
-        Ok(Self { db, pinned })
+        Ok(Self { db, pinned, owned })
     }
 }
 impl FactStore for IndexReader {
+    fn source_registrar_snapshot<'a>(
+        &'a self,
+        documents: Option<&BTreeMap<String, Vec<u8>>>,
+    ) -> Result<Option<Box<dyn cf_application::RegistrarLookup + 'a>>> {
+        if self.owned {
+            self.registrar_snapshot(documents)
+        } else {
+            Ok(None)
+        }
+    }
+    fn source_facts(&self, name: &str, content_hash: Option<&[u8]>) -> Result<Option<SourceFacts>> {
+        if !self.owned {
+            return Ok(None);
+        }
+        if !self.pinned && content_hash.is_none() {
+            return Err(invalid("Локальные SourceFacts требуют hash XML"));
+        }
+        let row: Option<(Vec<u8>, Vec<u8>)> = self
+            .db
+            .query_row(
+                "SELECT content_hash,facts FROM objects WHERE name=?",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(crate::external)?;
+        match row {
+            Some((hash, data)) if content_hash.is_none_or(|expected| expected == hash) => {
+                match facts_cache::decode(&data, name, &hash, &FactVersions::current()) {
+                    Ok(facts) => Ok(Some(facts)),
+                    Err(_) if !self.pinned => Ok(None),
+                    Err(_) => Err(invalid(
+                        "SourceFacts SQLite повреждены или несовместимы. Выберите новую папку индекса и создайте его заново.",
+                    )),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
     fn lookup(&self, name: &str, content_hash: Option<&[u8]>) -> Result<Option<Facts>> {
+        if self.owned {
+            return self
+                .source_facts(name, content_hash)?
+                .map(|facts| facts.structural_facts())
+                .transpose();
+        }
         if !self.pinned && content_hash.is_none() {
             return Err(invalid("Локальные facts требуют проверки hash XML"));
         }
