@@ -8,6 +8,7 @@ use crate::{
     xml::escape,
 };
 use cf_application::MetadataSource;
+use cf_application::profile;
 use cf_domain::{Error, Result, package_plan::*, source_facts::*};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -446,264 +447,270 @@ fn subsystem_file(
     })
 }
 
-pub(crate) fn compile(recipe: &Recipe, source: &dyn MetadataSource) -> Result<CompiledPackagePlan> {
-    let composition = &recipe.composition;
-    composition.require_complete()?;
-    let mut proof = SourceProof {
-        identity: source.identity().into(),
-        snapshot: composition.source_fingerprint.clone(),
-        inputs: BTreeMap::new(),
-    };
-    for (path, hash) in &composition.source_hashes {
-        proof.observe(
-            path.clone(),
-            InputObservation::Content {
-                sha256: hash.clone(),
-            },
-        )?;
-    }
-    for (path, present) in &recipe.presence {
-        if !present {
-            proof.observe(path.clone(), InputObservation::Absent)?;
-        }
-    }
-    for (path, entries) in &recipe.listings {
-        proof.observe(
-            path.clone(),
-            InputObservation::Directory {
-                entries: entries
-                    .iter()
-                    .map(|entry| DirectoryEntry {
-                        name: entry.name.clone(),
-                        directory: entry.directory,
-                    })
-                    .collect(),
-            },
-        )?;
-    }
-    for (key, files) in &recipe.below {
-        let base = crate::source_schema::descriptor(key)
-            .expect("metadata descriptor")
-            .trim_end_matches(".xml")
-            .to_owned();
-        proof.observe(
-            base,
-            InputObservation::Directory {
-                entries: files
-                    .iter()
-                    .map(|path| DirectoryEntry {
-                        name: path.clone(),
-                        directory: false,
-                    })
-                    .collect(),
-            },
-        )?;
-    }
-    let stamp = PlanStamp {
-        generation: "compiling".into(),
-        proof_digest: proof.digest()?,
-        readers: FactVersions::current(),
-        rule_profile: RULE_PROFILE.into(),
-    };
-    let mut projection = ProjectionPlan {
-        stamp: stamp.clone(),
-        selected: composition.selected.clone(),
-        dependencies: composition.stubs.keys().cloned().collect(),
-        objects: BTreeMap::new(),
-        files: BTreeMap::new(),
-    };
-    let mut merge = MergePlan {
-        stamp,
-        objects: BTreeMap::new(),
-        children: BTreeMap::new(),
-        order: vec![],
-    };
-    for key in &composition.selected {
-        let path = crate::source_schema::descriptor(key).expect("metadata descriptor");
-        let document = recipe.frozen_document(key).ok_or_else(|| {
-            Error::Invalid(format!(
-                "Не прочитаны исходные факты выбранного объекта {key}"
-            ))
-        })?;
-        let retained = document.facts.fragments.keys().cloned().collect();
-        projection.objects.insert(
-            key.clone(),
-            ObjectProjection {
-                content: ContentMode::Full,
-                role: SelectionRole::Selected,
-                descriptor: path,
-                declarations: declarations(document, &retained),
-                identity: identities(document, &retained),
-                retained,
-            },
-        );
-        for path in &recipe.below[key] {
-            insert(&mut projection.files, path, copy(recipe, key, path)?)?;
-        }
-        merge.objects.insert(
-            key.clone(),
-            MergeObjectPlan {
-                action: MergeAction::GetFromSecondConfiguration,
-                protected: vec![],
-            },
-        );
-    }
-    for (key, built) in &recipe.built {
-        let path = crate::source_schema::descriptor(key).expect("metadata descriptor");
-        let full = cf_domain::full_resource(key.split_once('.').expect("metadata key").0);
-        let file = if full {
-            copy(recipe, key, &path)?
-        } else {
-            project(
-                key,
-                &path,
-                built.source.view.xml.source.as_bytes(),
-                built.projection.edits.clone(),
-                built.projection.expected.clone(),
-            )?
+pub(crate) fn compile(
+    recipe: &Recipe,
+    source: &dyn MetadataSource,
+    built_objects: &BTreeMap<String, crate::engine::Built>,
+    documents: &BTreeMap<String, std::sync::Arc<crate::source_reader::SourceDocument>>,
+) -> Result<CompiledPackagePlan> {
+    profile::measure("engine.package_compile", "engine.finish", 0, None, || {
+        let composition = &recipe.composition;
+        composition.require_complete()?;
+        let mut proof = SourceProof {
+            identity: source.identity().into(),
+            snapshot: composition.source_fingerprint.clone(),
+            inputs: BTreeMap::new(),
         };
-        let content = file.content;
-        insert(&mut projection.files, &path, file)?;
-        for path in &built.files {
-            insert(&mut projection.files, path, copy(recipe, key, path)?)?;
+        for (path, hash) in &composition.source_hashes {
+            proof.observe(
+                path.clone(),
+                InputObservation::Content {
+                    sha256: hash.clone(),
+                },
+            )?;
+        }
+        for (path, present) in &recipe.presence {
+            if !present {
+                proof.observe(path.clone(), InputObservation::Absent)?;
+            }
+        }
+        for (path, entries) in &recipe.listings {
+            proof.observe(
+                path.clone(),
+                InputObservation::Directory {
+                    entries: entries
+                        .iter()
+                        .map(|entry| DirectoryEntry {
+                            name: entry.name.clone(),
+                            directory: entry.directory,
+                        })
+                        .collect(),
+                },
+            )?;
+        }
+        for (key, files) in &recipe.below {
+            let base = crate::source_schema::descriptor(key)
+                .expect("metadata descriptor")
+                .trim_end_matches(".xml")
+                .to_owned();
+            proof.observe(
+                base,
+                InputObservation::Directory {
+                    entries: files
+                        .iter()
+                        .map(|path| DirectoryEntry {
+                            name: path.clone(),
+                            directory: false,
+                        })
+                        .collect(),
+                },
+            )?;
+        }
+        let stamp = PlanStamp {
+            generation: "compiling".into(),
+            proof_digest: proof.digest()?,
+            readers: FactVersions::current(),
+            rule_profile: RULE_PROFILE.into(),
+        };
+        let mut projection = ProjectionPlan {
+            stamp: stamp.clone(),
+            selected: composition.selected.clone(),
+            dependencies: composition.stubs.keys().cloned().collect(),
+            objects: BTreeMap::new(),
+            files: BTreeMap::new(),
+        };
+        let mut merge = MergePlan {
+            stamp,
+            objects: BTreeMap::new(),
+            children: BTreeMap::new(),
+            order: vec![],
+        };
+        for key in &composition.selected {
+            let path = crate::source_schema::descriptor(key).expect("metadata descriptor");
+            let document = documents.get(key).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "Не прочитаны исходные факты выбранного объекта {key}"
+                ))
+            })?;
+            let retained = document.facts.fragments.keys().cloned().collect();
+            projection.objects.insert(
+                key.clone(),
+                ObjectProjection {
+                    content: ContentMode::Full,
+                    role: SelectionRole::Selected,
+                    descriptor: path,
+                    declarations: declarations(document, &retained),
+                    identity: identities(document, &retained),
+                    retained,
+                },
+            );
+            for path in &recipe.below[key] {
+                insert(&mut projection.files, path, copy(recipe, key, path)?)?;
+            }
+            merge.objects.insert(
+                key.clone(),
+                MergeObjectPlan {
+                    action: MergeAction::GetFromSecondConfiguration,
+                    protected: vec![],
+                },
+            );
+        }
+        for (key, built) in built_objects {
+            let path = crate::source_schema::descriptor(key).expect("metadata descriptor");
+            let full = cf_domain::full_resource(key.split_once('.').expect("metadata key").0);
+            let file = if full {
+                copy(recipe, key, &path)?
+            } else {
+                project(
+                    key,
+                    &path,
+                    built.source.view.xml.source.as_bytes(),
+                    built.projection.edits.clone(),
+                    built.projection.expected.clone(),
+                )?
+            };
+            let content = file.content;
+            insert(&mut projection.files, &path, file)?;
+            for path in &built.files {
+                insert(&mut projection.files, path, copy(recipe, key, path)?)?;
+            }
+            projection.objects.insert(
+                key.clone(),
+                ObjectProjection {
+                    content,
+                    role: SelectionRole::Dependency,
+                    descriptor: path,
+                    declarations: declarations(&built.source, &built.projection.retained),
+                    retained: built.projection.retained.clone(),
+                    identity: identities(&built.source, &built.projection.retained),
+                },
+            );
+            merge.objects.insert(
+                key.clone(),
+                MergeObjectPlan {
+                    action: MergeAction::MergePrioritizingMainConfiguration,
+                    protected: recipe.merge_rules.get(key).cloned().unwrap_or_default(),
+                },
+            );
+        }
+        for (key, protected) in &recipe.merge_rules {
+            if merge.objects.contains_key(key) {
+                continue;
+            }
+            let (owner, built) = built_objects
+                .iter()
+                .find(|(owner, _)| key.starts_with(&format!("{owner}.")))
+                .ok_or_else(|| Error::Invalid(format!("Нет владельца защиты {key}")))?;
+            let (_, declaration) = built
+                .source
+                .facts
+                .fragments
+                .iter()
+                .find(|(_, fragment)| {
+                    fragment.kind == FragmentKind::Declaration
+                        && format!("{owner}.{}.{}", fragment.tag.local, fragment.name) == *key
+                        && built.projection.retained.contains(&fragment.id)
+                })
+                .ok_or_else(|| Error::Invalid(format!("Нет сохранённой декларации для {key}")))?;
+            merge.children.insert(
+                key.clone(),
+                MergeChildPlan {
+                    owner: owner.clone(),
+                    fragment: declaration.id.clone(),
+                    tag: declaration.tag.local.clone(),
+                    name: declaration.name.clone(),
+                    protected: protected.clone(),
+                },
+            );
+        }
+        let configuration_key = format!("Configuration.{}", source.catalog().name);
+        let config_source = SourceDocument::descriptor(
+            &configuration_key,
+            "Configuration.xml",
+            recipe.frozen_text("Configuration.xml")?.as_bytes(),
+            proof.clone(),
+        )?;
+        let included = composition
+            .selected
+            .iter()
+            .chain(composition.stubs.keys())
+            .cloned()
+            .collect();
+        let config = configuration(&config_source, &included, &composition.selected)?;
+        for path in &config.languages {
+            insert(
+                &mut projection.files,
+                path,
+                copy(recipe, &configuration_key, path)?,
+            )?;
         }
         projection.objects.insert(
-            key.clone(),
+            configuration_key.clone(),
             ObjectProjection {
-                content,
-                role: SelectionRole::Dependency,
-                descriptor: path,
-                declarations: declarations(&built.source, &built.projection.retained),
-                retained: built.projection.retained.clone(),
-                identity: identities(&built.source, &built.projection.retained),
+                content: ContentMode::Projected,
+                role: SelectionRole::Service,
+                descriptor: "Configuration.xml".into(),
+                declarations: declarations(&config_source, &config.retained),
+                retained: config.retained,
+                identity: config.identity,
             },
         );
-        merge.objects.insert(
-            key.clone(),
-            MergeObjectPlan {
-                action: MergeAction::MergePrioritizingMainConfiguration,
-                protected: recipe.merge_rules.get(key).cloned().unwrap_or_default(),
+        projection.objects.insert(
+            SUBSYSTEM.into(),
+            ObjectProjection {
+                content: ContentMode::Service,
+                role: SelectionRole::Service,
+                descriptor: "Subsystems/_Перенос.xml".into(),
+                declarations: BTreeMap::new(),
+                retained: BTreeSet::new(),
+                identity: BTreeMap::from([("Subsystem/@uuid".into(), config.subsystem_uuid)]),
             },
         );
-    }
-    for (key, protected) in &recipe.merge_rules {
-        if merge.objects.contains_key(key) {
-            continue;
-        }
-        let (owner, built) = recipe
-            .built
-            .iter()
-            .find(|(owner, _)| key.starts_with(&format!("{owner}.")))
-            .ok_or_else(|| Error::Invalid(format!("Нет владельца защиты {key}")))?;
-        let (_, declaration) = built
-            .source
-            .facts
-            .fragments
-            .iter()
-            .find(|(_, fragment)| {
-                fragment.kind == FragmentKind::Declaration
-                    && format!("{owner}.{}.{}", fragment.tag.local, fragment.name) == *key
-                    && built.projection.retained.contains(&fragment.id)
-            })
-            .ok_or_else(|| Error::Invalid(format!("Нет сохранённой декларации для {key}")))?;
-        merge.children.insert(
-            key.clone(),
-            MergeChildPlan {
-                owner: owner.clone(),
-                fragment: declaration.id.clone(),
-                tag: declaration.tag.local.clone(),
-                name: declaration.name.clone(),
-                protected: protected.clone(),
-            },
-        );
-    }
-    let configuration_key = format!("Configuration.{}", source.catalog().name);
-    let config_source = SourceDocument::descriptor(
-        &configuration_key,
-        "Configuration.xml",
-        recipe.frozen_text("Configuration.xml")?.as_bytes(),
-        proof.clone(),
-    )?;
-    let included = composition
-        .selected
-        .iter()
-        .chain(composition.stubs.keys())
-        .cloned()
-        .collect();
-    let config = configuration(&config_source, &included, &composition.selected)?;
-    for path in &config.languages {
         insert(
             &mut projection.files,
-            path,
-            copy(recipe, &configuration_key, path)?,
+            "Configuration.xml",
+            config.descriptor,
         )?;
-    }
-    projection.objects.insert(
-        configuration_key.clone(),
-        ObjectProjection {
-            content: ContentMode::Projected,
-            role: SelectionRole::Service,
-            descriptor: "Configuration.xml".into(),
-            declarations: declarations(&config_source, &config.retained),
-            retained: config.retained,
-            identity: config.identity,
-        },
-    );
-    projection.objects.insert(
-        SUBSYSTEM.into(),
-        ObjectProjection {
-            content: ContentMode::Service,
-            role: SelectionRole::Service,
-            descriptor: "Subsystems/_Перенос.xml".into(),
-            declarations: BTreeMap::new(),
-            retained: BTreeSet::new(),
-            identity: BTreeMap::from([("Subsystem/@uuid".into(), config.subsystem_uuid)]),
-        },
-    );
-    insert(
-        &mut projection.files,
-        "Configuration.xml",
-        config.descriptor,
-    )?;
-    insert(
-        &mut projection.files,
-        "Subsystems/_Перенос.xml",
-        config.subsystem,
-    )?;
-    for key in [configuration_key.as_str(), SUBSYSTEM] {
-        merge.objects.insert(
-            key.into(),
-            MergeObjectPlan {
-                action: MergeAction::DoNotMerge,
-                protected: vec![],
-            },
+        insert(
+            &mut projection.files,
+            "Subsystems/_Перенос.xml",
+            config.subsystem,
+        )?;
+        for key in [configuration_key.as_str(), SUBSYSTEM] {
+            merge.objects.insert(
+                key.into(),
+                MergeObjectPlan {
+                    action: MergeAction::DoNotMerge,
+                    protected: vec![],
+                },
+            );
+        }
+        merge.order.push(configuration_key);
+        merge.order.extend(composition.selected.iter().cloned());
+        merge.order.extend(composition.stubs.keys().cloned());
+        merge.order.extend(merge.children.keys().cloned());
+        merge.order.push(SUBSYSTEM.into());
+        let generation = sha256(
+            &serde_json::to_vec(&(
+                &proof,
+                &projection.objects,
+                &projection.files,
+                &merge.objects,
+                &merge.children,
+                &merge.order,
+            ))
+            .map_err(crate::external)?,
         );
-    }
-    merge.order.push(configuration_key);
-    merge.order.extend(composition.selected.iter().cloned());
-    merge.order.extend(composition.stubs.keys().cloned());
-    merge.order.extend(merge.children.keys().cloned());
-    merge.order.push(SUBSYSTEM.into());
-    let generation = sha256(
-        &serde_json::to_vec(&(
-            &proof,
-            &projection.objects,
-            &projection.files,
-            &merge.objects,
-            &merge.children,
-            &merge.order,
-        ))
-        .map_err(crate::external)?,
-    );
-    projection.stamp.generation = generation.clone();
-    merge.stamp.generation = generation;
-    let plan = CompiledPackagePlan {
-        source: proof,
-        projection,
-        merge,
-    };
-    plan.validate()?;
-    Ok(plan)
+        projection.stamp.generation = generation.clone();
+        merge.stamp.generation = generation;
+        let plan = CompiledPackagePlan {
+            source: proof,
+            projection,
+            merge,
+        };
+        plan.validate()?;
+        Ok(plan)
+    })
 }
 
 /// Serialize only explicit actions. This function has no access to source files.

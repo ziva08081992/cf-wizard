@@ -227,26 +227,25 @@ pub struct SourceFacts {
 impl SourceFacts {
     /// Cache payload validation never promotes a legacy shape to a new reader.
     pub fn validate(&self) -> Result<()> {
+        let mut parents_are_shorter = true;
         for (id, fragment) in &self.fragments {
             if id != &fragment.id || fragment.owner != self.object {
                 return Err(Error::Invalid(
                     "Некорректный владелец или адрес SourceFacts".into(),
                 ));
             }
-            if fragment
-                .parent
-                .as_ref()
-                .is_some_and(|p| !self.fragments.contains_key(p))
-            {
-                return Err(Error::Invalid(format!(
-                    "Неизвестный родитель фрагмента: {id}"
-                )));
+            if let Some(parent) = &fragment.parent {
+                if !self.fragments.contains_key(parent) {
+                    return Err(Error::Invalid(format!(
+                        "Неизвестный родитель фрагмента: {id}"
+                    )));
+                }
+                parents_are_shorter &= parent.len() < id.len();
             }
-            if self.proof.inputs.get(&fragment.origin.path)
-                != Some(&InputObservation::Content {
-                    sha256: fragment.origin.sha256.clone(),
-                })
-                || fragment.origin.span.is_some_and(|(start, end)| start > end)
+            if !matches!(
+                self.proof.inputs.get(&fragment.origin.path),
+                Some(InputObservation::Content { sha256 }) if sha256 == &fragment.origin.sha256
+            ) || fragment.origin.span.is_some_and(|(start, end)| start > end)
             {
                 return Err(Error::Invalid(format!(
                     "Неподтверждённый источник фрагмента: {id}"
@@ -268,23 +267,30 @@ impl SourceFacts {
         {
             return Err(Error::Invalid("Неизвестный origin coverage note".into()));
         }
-        // Each node is visited once after its ancestors have been proved acyclic.
-        let mut finished = BTreeSet::new();
-        for id in self.fragments.keys() {
-            let mut branch = BTreeSet::new();
-            let mut cursor = Some(id.as_str());
+        // An address length that decreases at every parent edge rules out a cycle.
+        // XML-derived addresses have this property, but older facts need not.
+        if parents_are_shorter {
+            return Ok(());
+        }
+        // A node already reached by another completed walk has an acyclic parent chain.
+        let mut visited = BTreeMap::new();
+        for id in self.fragments.keys().map(String::as_str) {
+            let mut cursor = Some(id);
             while let Some(node) = cursor {
-                if finished.contains(node) {
-                    break;
-                }
-                if !branch.insert(node.to_owned()) {
-                    return Err(Error::Invalid(format!(
-                        "Цикл родителей SourceFacts: {node}"
-                    )));
+                use std::collections::btree_map::Entry;
+                match visited.entry(node) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(id);
+                    }
+                    Entry::Occupied(entry) if *entry.get() == id => {
+                        return Err(Error::Invalid(format!(
+                            "Цикл родителей SourceFacts: {node}"
+                        )));
+                    }
+                    Entry::Occupied(_) => break,
                 }
                 cursor = self.fragments[node].parent.as_deref();
             }
-            finished.extend(branch);
         }
         Ok(())
     }

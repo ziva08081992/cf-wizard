@@ -4,6 +4,7 @@ use crate::{
     kinds::TYPE_FOLDERS,
     source_xml::SourceXml,
 };
+use cf_application::profile;
 use cf_application::{Cancellation, MetadataSource, SourceEntry};
 use cf_domain::{Catalog, Error, MetadataObject, ObjectKey, Result};
 use std::{
@@ -419,104 +420,126 @@ impl MetadataSource for LocalSource {
         &self.catalog
     }
     fn read(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<u8>> {
-        cancel.check()?;
-        let path = self.path(relative)?;
-        let mut file = fs::File::open(&path).map_err(crate::external)?;
-        if !file.metadata().map_err(crate::external)?.is_file() {
-            return Err(Error::Invalid(format!("Ожидался обычный файл: {relative}")));
-        }
-        let mut data = vec![];
-        let mut block = [0u8; 64 * 1024];
-        loop {
-            cancel.check()?;
-            let n = file.read(&mut block).map_err(crate::external)?;
-            if n == 0 {
-                break;
-            }
-            data.extend_from_slice(&block[..n]);
-        }
-        checked_local_kind(&path)?;
-        Ok(data)
+        cf_application::profile::measured_bytes(
+            None,
+            "source.read",
+            "engine",
+            Some(relative),
+            || {
+                cancel.check()?;
+                let path = self.path(relative)?;
+                let mut file = fs::File::open(&path).map_err(crate::external)?;
+                if !file.metadata().map_err(crate::external)?.is_file() {
+                    return Err(Error::Invalid(format!("Ожидался обычный файл: {relative}")));
+                }
+                let mut data = vec![];
+                let mut block = [0u8; 64 * 1024];
+                loop {
+                    cancel.check()?;
+                    let n = file.read(&mut block).map_err(crate::external)?;
+                    if n == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&block[..n]);
+                }
+                checked_local_kind(&path)?;
+                Ok(data)
+            },
+        )
     }
     fn exists(&self, relative: &str, cancel: &Cancellation) -> Result<bool> {
-        cancel.check()?;
-        let path = self.root.join(relative_path(relative)?);
-        Ok(checked_local_kind(&path)? == Some(LocalKind::File))
+        profile::source_measure(None, "source.exists", "source", 0, Some(relative), || {
+            cancel.check()?;
+            let path = self.root.join(relative_path(relative)?);
+            Ok(checked_local_kind(&path)? == Some(LocalKind::File))
+        })
     }
     fn list_directory(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<SourceEntry>> {
-        cancel.check()?;
-        let path = if relative.is_empty() {
-            self.root.clone()
-        } else {
-            self.root.join(relative_path(relative)?)
-        };
-        checked_local_kind(&path)?;
-        let listing = match fs::read_dir(&path) {
-            Ok(listing) => listing,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(e) => return Err(crate::external(e)),
-        };
-        let mut out = vec![];
-        let mut names = BTreeSet::new();
-        for entry in listing {
-            cancel.check()?;
-            let entry = entry.map_err(crate::external)?;
-            let kind = checked_local_kind(&entry.path())?.ok_or_else(|| {
-                crate::external(std::io::Error::from(std::io::ErrorKind::NotFound))
-            })?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| Error::Invalid("Путь не представим в UTF8".into()))?;
-            if !names.insert(name.case_fold().collect::<String>()) {
-                return Err(Error::Invalid(format!(
-                    "Коллизия Windows-путей в {}",
-                    path.display()
-                )));
-            }
-            if !matches!(kind, LocalKind::Directory | LocalKind::File) {
-                return Err(Error::Invalid("Неподдерживаемый вид файла".into()));
-            }
-            out.push(SourceEntry {
-                name,
-                directory: kind == LocalKind::Directory,
-            });
-        }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
+        profile::measured_items(
+            None,
+            "source.list_directory",
+            "source",
+            Some(relative),
+            || {
+                cancel.check()?;
+                let path = if relative.is_empty() {
+                    self.root.clone()
+                } else {
+                    self.root.join(relative_path(relative)?)
+                };
+                checked_local_kind(&path)?;
+                let listing = match fs::read_dir(&path) {
+                    Ok(listing) => listing,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+                    Err(e) => return Err(crate::external(e)),
+                };
+                let mut out = vec![];
+                let mut names = BTreeSet::new();
+                for entry in listing {
+                    cancel.check()?;
+                    let entry = entry.map_err(crate::external)?;
+                    let kind = checked_local_kind(&entry.path())?.ok_or_else(|| {
+                        crate::external(std::io::Error::from(std::io::ErrorKind::NotFound))
+                    })?;
+                    let name = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| Error::Invalid("Путь не представим в UTF8".into()))?;
+                    if !names.insert(name.case_fold().collect::<String>()) {
+                        return Err(Error::Invalid(format!(
+                            "Коллизия Windows-путей в {}",
+                            path.display()
+                        )));
+                    }
+                    if !matches!(kind, LocalKind::Directory | LocalKind::File) {
+                        return Err(Error::Invalid("Неподдерживаемый вид файла".into()));
+                    }
+                    out.push(SourceEntry {
+                        name,
+                        directory: kind == LocalKind::Directory,
+                    });
+                }
+                out.sort_by(|a, b| a.name.cmp(&b.name));
+                Ok(out)
+            },
+        )
     }
     fn files_below(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<String>> {
-        let prefix = relative_path(relative)?.trim_end_matches('/');
-        let mut out = vec![];
-        let mut todo = vec![prefix.to_owned()];
-        while let Some(directory) = todo.pop() {
-            for entry in self.list_directory(&directory, cancel)? {
-                let child = format!("{directory}/{}", entry.name);
-                if entry.directory {
-                    todo.push(child);
-                } else {
-                    out.push(child);
+        profile::measured_items(None, "source.files_below", "source", Some(relative), || {
+            let prefix = relative_path(relative)?.trim_end_matches('/');
+            let mut out = vec![];
+            let mut todo = vec![prefix.to_owned()];
+            while let Some(directory) = todo.pop() {
+                for entry in self.list_directory(&directory, cancel)? {
+                    let child = format!("{directory}/{}", entry.name);
+                    if entry.directory {
+                        todo.push(child);
+                    } else {
+                        out.push(child);
+                    }
                 }
             }
-        }
-        out.sort();
-        Ok(out)
+            out.sort();
+            Ok(out)
+        })
     }
     fn snapshot(&self, cancel: &Cancellation) -> Result<String> {
-        let config = sha256(&self.read("Configuration.xml", cancel)?);
-        if config != self.configuration_hash {
-            return Err(Error::Invalid(
-                "Configuration.xml изменился: откройте выгрузку заново".into(),
-            ));
-        }
-        let dump = if self.exists("ConfigDumpInfo.xml", cancel)? {
-            sha256(&self.read("ConfigDumpInfo.xml", cancel)?)
-        } else {
-            String::new()
-        };
-        Ok(sha256(
-            ascii_json(&(self.identity(), config, dump))?.as_bytes(),
-        ))
+        profile::source_measure(None, "source.snapshot", "source", 0, None, || {
+            let config = sha256(&self.read("Configuration.xml", cancel)?);
+            if config != self.configuration_hash {
+                return Err(Error::Invalid(
+                    "Configuration.xml изменился: откройте выгрузку заново".into(),
+                ));
+            }
+            let dump = if self.exists("ConfigDumpInfo.xml", cancel)? {
+                sha256(&self.read("ConfigDumpInfo.xml", cancel)?)
+            } else {
+                String::new()
+            };
+            Ok(sha256(
+                ascii_json(&(self.identity(), config, dump))?.as_bytes(),
+            ))
+        })
     }
 }
 #[cfg(test)]

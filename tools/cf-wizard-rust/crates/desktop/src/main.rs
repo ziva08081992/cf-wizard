@@ -1,6 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod close_probe;
 mod host;
 mod model;
+mod profile;
+mod shutdown;
 fn main() {
     let base = host::data_directory();
     let initial = cf_infrastructure::settings::Settings::load(&base.join("paths.json"));

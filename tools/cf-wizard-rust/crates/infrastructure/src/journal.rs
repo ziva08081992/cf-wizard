@@ -59,6 +59,26 @@ impl OperationLog {
         writer.write_all(b"\n").map_err(crate::external)?;
         writer.flush().map_err(crate::external)
     }
+    /// Optional diagnostics use one bounded buffer/write, preserving the JSONL
+    /// envelope and flush. The established value() path is intentionally intact.
+    pub fn profile_value(&self, event: &str, fields: Value) -> Result<()> {
+        #[derive(serde::Serialize)]
+        struct Row<'a> {
+            time: String,
+            event: &'a str,
+            data: Value,
+        }
+        let row = Row {
+            time: chrono::Utc::now().to_rfc3339(),
+            event,
+            data: fields,
+        };
+        let mut encoded = serde_json::to_vec(&row).map_err(crate::external)?;
+        encoded.push(b'\n');
+        let mut writer = self.writer.lock().map_err(crate::external)?;
+        writer.write_all(&encoded).map_err(crate::external)?;
+        writer.flush().map_err(crate::external)
+    }
     pub fn failure(&self, error: &str) -> Result<PathBuf> {
         self.value("failed", json!({"message":error}))?;
         let folder = self.path.parent().unwrap().join("Ошибки");
@@ -213,6 +233,36 @@ pub fn crash(folder: &Path, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn buffered_profile_rows_preserve_the_jsonl_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = OperationLog::create(dir.path(), "test").unwrap();
+        let path = log.path.clone();
+        let fields = json!({"текст":"проверка\nстроки", "cpu":null, "errors":0,
+            "shared_source_activity":false, "parents":["engine.total"],
+            "source_delta":{"calls":3,"bytes":4096}});
+        log.value("profile-summary", fields.clone()).unwrap();
+        log.profile_value("profile-summary", fields.clone())
+            .unwrap();
+        drop(log);
+        let compressed = fs::read(path).unwrap();
+        let mut decoded = String::new();
+        MultiGzDecoder::new(compressed.as_slice())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert!(decoded.ends_with('\n'));
+        let rows: Vec<Value> = decoded
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 3);
+        for row in &rows[1..] {
+            assert_eq!(row.as_object().unwrap().len(), 3);
+            assert!(chrono::DateTime::parse_from_rfc3339(row["time"].as_str().unwrap()).is_ok());
+            assert_eq!(row["event"], "profile-summary");
+            assert_eq!(row["data"], fields);
+        }
+    }
     #[test]
     fn compressed_journal_can_be_viewed() {
         let dir = tempfile::tempdir().unwrap();

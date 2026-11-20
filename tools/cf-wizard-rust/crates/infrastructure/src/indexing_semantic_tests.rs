@@ -10,7 +10,8 @@ fn invalidate_object(db: &Connection, name: &str) {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    let mut facts = facts_cache::decode(&payload, name, &hash, &FactVersions::current()).unwrap();
+    let mut facts =
+        facts_cache::decode_v3(&payload, name, &hash, &FactVersions::current()).unwrap();
     facts
         .versions
         .readers
@@ -18,7 +19,7 @@ fn invalidate_object(db: &Connection, name: &str) {
     let signature = facts_cache::signature(&facts.versions, facts_cache::OBJECT_FACETS).unwrap();
     db.execute(
         "UPDATE objects SET facts=? WHERE name=?",
-        params![facts_cache::encode(&facts).unwrap(), name],
+        params![facts_cache::encode_v3(&facts).unwrap(), name],
     )
     .unwrap();
     db.execute(

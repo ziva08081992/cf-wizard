@@ -1,12 +1,15 @@
 //! Persistent index lifecycle: read-only readiness and explicit atomic XML-delta updates.
+use cf_application::profile;
 #[cfg(test)]
 #[path = "indexing_tests.rs"]
 mod tests;
 use crate::{
-    canonical::{GitInputs, InputEntry, sha256},
+    canonical::{InputEntry, sha256},
     engine::metadata_listing,
     facts_cache,
-    index::{APPLICATION_ID, IndexReader, Proof, header, read_manifest, validate_owned_semantics},
+    index::{
+        IndexReader, Proof, complete, header, read_manifest_verified, validate_owned_semantics,
+    },
     registrar_facts,
     source::{no_links, normal_path},
     source_reader::SourceDocument,
@@ -16,7 +19,7 @@ use cf_domain::{
     Error, Result,
     source_facts::{FactVersions, RULE_PROFILE, SourceProof},
 };
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -24,10 +27,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
-const SCHEMA:&str="
+pub(crate) const SCHEMA:&str="
 PRAGMA application_id=1128679768;
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS objects(name TEXT PRIMARY KEY,content_hash BLOB NOT NULL,facts BLOB NOT NULL) WITHOUT ROWID;
@@ -92,7 +95,7 @@ pub fn path_for(source: &dyn MetadataSource, directory: &Path) -> Result<PathBuf
         .map_or_else(|| source.identity(), |m| m.source_key.as_str());
     let name = source.catalog().name.chars().take(64).collect::<String>();
     Ok(folder.join(format!(
-        "{name}-{}.source-facts-v2.sqlite3",
+        "{name}-{}.source-facts-v3.sqlite3",
         &sha256(identity.as_bytes())[..20]
     )))
 }
@@ -124,29 +127,16 @@ fn candidates(preferred: &Path) -> Result<Vec<PathBuf>> {
     all.extend(others);
     Ok(all)
 }
-fn readonly(path: &Path) -> Result<Connection> {
-    no_links(path)?;
-    let db = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(crate::external)?;
-    db.busy_timeout(Duration::from_secs(5))
-        .map_err(crate::external)?;
-    db.execute_batch("PRAGMA trusted_schema=OFF; BEGIN DEFERRED;")
-        .map_err(crate::external)?;
-    let id: i32 = db
-        .query_row("PRAGMA application_id", [], |r| r.get(0))
-        .map_err(crate::external)?;
-    if id != APPLICATION_ID {
-        return Err(Error::Invalid("Это не индекс CF Wizard".into()));
-    }
-    Ok(db)
+fn readonly(path: &Path) -> Result<crate::sqlite_cache::CachedConnection> {
+    profile::measure("index.candidate_open", "index.readiness", 0, None, || {
+        crate::sqlite_cache::CachedConnection::readonly(path)
+    })
 }
+
 fn supported(meta: &BTreeMap<String, String>) -> bool {
     meta.get("schema").map(String::as_str) == Some("2")
         && meta.get("engine").map(String::as_str) == Some("cf-wizard-rust")
-        && meta.get("facts_contract").map(String::as_str) == Some(facts_cache::CONTRACT)
+        && crate::index::known_facts_contract(meta)
 }
 fn origin(meta: &BTreeMap<String, String>, source: &dyn MetadataSource) -> bool {
     if let Some(inputs) = source.manifest() {
@@ -170,92 +160,63 @@ fn origin(meta: &BTreeMap<String, String>, source: &dyn MetadataSource) -> bool 
             && meta.get("source").map(String::as_str) == Some(source.identity())
     }
 }
-fn keys(db: &Connection, table: &str, column: &str) -> Result<BTreeSet<String>> {
-    let sql = match (table, column) {
-        ("objects", "name") => "SELECT name FROM objects",
-        ("documents", "file") => "SELECT file FROM documents",
-        _ => return Err(Error::Invalid("Недопустимая таблица индекса".into())),
-    };
-    let mut q = db.prepare(sql).map_err(crate::external)?;
-    q.query_map([], |r| r.get(0))
-        .map_err(crate::external)?
-        .collect::<rusqlite::Result<BTreeSet<_>>>()
-        .map_err(crate::external)
-}
-fn complete(db: &Connection, inputs: &GitInputs) -> Result<bool> {
-    let objects = inputs
-        .entries
-        .iter()
-        .filter(|e| e.roles.split(',').any(|r| r == "descriptor"))
-        .map(|e| e.owner.clone())
-        .collect::<BTreeSet<_>>();
-    let docs = inputs
-        .entries
-        .iter()
-        .filter(|e| e.roles.split(',').any(|r| r == "registrar"))
-        .map(|e| e.path.rsplit('/').next().expect("path").to_owned())
-        .collect::<BTreeSet<_>>();
-    Ok(keys(db, "objects", "name")? == objects && keys(db, "documents", "file")? == docs)
-}
 pub fn status(source: &dyn MetadataSource, directory: &Path) -> Result<IndexStatus> {
-    let preferred = path_for(source, directory)?;
-    let mut found = false;
-    let mut reason = "Индекс ещё не создан".to_owned();
-    for path in candidates(&preferred)? {
-        let Ok(db) = readonly(&path) else {
-            if path == preferred {
-                found = true;
-                reason = "Индекс повреждён или имеет другой формат".into();
-            }
-            continue;
-        };
-        let Ok(meta) = header(&db) else {
-            continue;
-        };
-        if !origin(&meta, source) {
-            continue;
-        }
-        found = true;
-        if !supported(&meta) {
-            reason = "Изменилась версия фактов: обновите индекс".into();
-            continue;
-        }
-        let proof = source
-            .manifest()
-            .map_or_else(|| Proof::Local(source.identity()), Proof::Git);
-        match IndexReader::open(&path, proof) {
-            Ok(_reader) => {
-                if let Some(inputs) = source.manifest()
-                    && !complete(&db, inputs)?
-                {
-                    reason = "Индекс неполон: обновите по кнопке".into();
-                    continue;
+    profile::measure("index.readiness", "operation", 0, None, || {
+        let preferred = path_for(source, directory)?;
+        let mut found = false;
+        let mut reason = "Индекс ещё не создан".to_owned();
+        for path in candidates(&preferred)? {
+            let Ok(db) = readonly(&path) else {
+                if path == preferred {
+                    found = true;
+                    reason = "Индекс повреждён или имеет другой формат".into();
                 }
-                return Ok(IndexStatus {
-                    path: Some(path.clone()),
-                    preferred,
-                    found: true,
-                    ready: true,
-                    info: format!(
-                        "{} · {}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        if source.manifest().is_some() {
-                            "соответствует XML ветки"
-                        } else {
-                            "записи сверяются с XML при использовании"
-                        }
-                    ),
-                });
+                continue;
+            };
+            let Ok(meta) = header(&db) else {
+                continue;
+            };
+            if !origin(&meta, source) {
+                continue;
             }
-            Err(e) => reason = e.to_string(),
+            found = true;
+            if !supported(&meta) {
+                reason = "Изменилась версия фактов: обновите индекс".into();
+                continue;
+            }
+            let proof = source
+                .manifest()
+                .map_or_else(|| Proof::Local(source.identity()), Proof::Git);
+            match profile::measure("index.open", "index.readiness", 0, None, || {
+                IndexReader::from_connection(db, proof)
+            }) {
+                Ok(_reader) => {
+                    return Ok(IndexStatus {
+                        path: Some(path.clone()),
+                        preferred,
+                        found: true,
+                        ready: true,
+                        info: format!(
+                            "{} · {}",
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            if source.manifest().is_some() {
+                                "соответствует XML ветки"
+                            } else {
+                                "записи сверяются с XML при использовании"
+                            }
+                        ),
+                    });
+                }
+                Err(e) => reason = e.to_string(),
+            }
         }
-    }
-    Ok(IndexStatus {
-        path: None,
-        preferred,
-        found,
-        ready: false,
-        info: reason,
+        Ok(IndexStatus {
+            path: None,
+            preferred,
+            found,
+            ready: false,
+            info: reason,
+        })
     })
 }
 #[derive(Eq, PartialEq)]
@@ -397,6 +358,7 @@ fn update_core(
     publication_hook: impl Fn(PublicationPoint),
 ) -> Result<IndexUpdate> {
     cancel.check()?;
+    source.prepare_index_cache(cancel)?;
     let proof = source.snapshot(cancel)?;
     let path = path_for(source, directory)?;
     let parent = path
@@ -433,10 +395,14 @@ fn update_core(
             ));
         }
         if let Some(inputs) = source.manifest()
+            && meta.get("facts_contract").map(String::as_str) == Some(facts_cache::CONTRACT_V3)
             && supported(&meta)
             && validate_owned_semantics(&db, &meta).is_ok()
-            && read_manifest(&db, &meta)
-                .is_ok_and(|old| old.fingerprint().ok() == inputs.fingerprint().ok())
+            && read_manifest_verified(&db, &meta).is_ok_and(|old| {
+                inputs
+                    .fingerprint()
+                    .is_ok_and(|current| old.fingerprint() == current)
+            })
             && complete(&db, inputs)?
         {
             let check: String = db
@@ -472,8 +438,8 @@ fn update_core(
             continue;
         }
         let manifest = if meta.contains_key("git_manifest") {
-            match read_manifest(&db, &meta) {
-                Ok(inputs) => Some(inputs),
+            match read_manifest_verified(&db, &meta) {
+                Ok(inputs) => Some(inputs.manifest),
                 Err(_) => continue,
             }
         } else {
@@ -485,12 +451,23 @@ fn update_core(
         if quick != "ok" || !foreign_keys_valid(&db)? {
             continue;
         }
-        db.backup("main", &draft, None).map_err(crate::external)?;
+        if meta.get("facts_contract").map(String::as_str) == Some(facts_cache::CONTRACT) {
+            // An old semantic reader requires source re-extraction, never transcode it
+            // under today's signature. V3 incremental refresh keeps its existing path.
+            if validate_owned_semantics(&db, &meta).is_err() {
+                report.migrated = true;
+                continue;
+            }
+            transcode_legacy(&db, &draft, cancel)?;
+            profile::note("index.migration.compact", "operation", 1);
+        } else {
+            db.backup_to(&draft, cancel)?;
+        }
         old_inputs = manifest;
         report.migrated = candidate != path;
         break;
     }
-    let mut db = Connection::open(&draft).map_err(crate::external)?;
+    let mut db = crate::sqlite_cache::CachedConnection::writable(&draft)?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;")
         .map_err(crate::external)?;
     db.execute_batch(SCHEMA).map_err(crate::external)?;
@@ -603,7 +580,7 @@ fn update_core(
                 report.unchanged += 1;
             } else {
                 let facts =
-                    facts_cache::encode(&parsed.as_ref().expect("parsed descriptor").facts)?;
+                    facts_cache::encode_v3(&parsed.as_ref().expect("parsed descriptor").facts)?;
                 transaction.execute("INSERT INTO objects VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET content_hash=excluded.content_hash,facts=excluded.facts",params![&entry.owner,&descriptor_digest,&facts]).map_err(crate::external)?;
                 transaction.execute("INSERT INTO object_semantics VALUES (?,?) ON CONFLICT(name) DO UPDATE SET signature=excluded.signature", params![&entry.owner, &object_signature]).map_err(crate::external)?;
                 if known.contains_key(&entry.owner) {
@@ -670,7 +647,7 @@ fn update_core(
         ("schema", "2"),
         ("source", source.identity()),
         ("engine", "cf-wizard-rust"),
-        ("facts_contract", facts_cache::CONTRACT),
+        ("facts_contract", facts_cache::CONTRACT_V3),
         ("rule_profile", RULE_PROFILE),
     ] {
         transaction
@@ -725,8 +702,74 @@ fn update_core(
     Ok(report)
 }
 fn foreign_keys_valid(db: &Connection) -> Result<bool> {
-    let mut query = db
-        .prepare("PRAGMA foreign_key_check")
+    crate::index_integrity::foreign_keys_valid(db)
+}
+
+/// Stream a verified V2 snapshot into a fresh compact draft; never mutate the legacy file.
+fn transcode_legacy(old: &Connection, draft: &Path, cancel: &Cancellation) -> Result<()> {
+    let mut db = crate::sqlite_cache::CachedConnection::writable(draft)?;
+    db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;")
         .map_err(crate::external)?;
-    Ok(!query.exists([]).map_err(crate::external)?)
+    db.execute_batch(SCHEMA).map_err(crate::external)?;
+    let tx = db.transaction().map_err(crate::external)?;
+    let mut query = old
+        .prepare("SELECT name,content_hash,facts FROM objects ORDER BY name")
+        .map_err(crate::external)?;
+    let mut rows = query.query([]).map_err(crate::external)?;
+    let mut insert = tx
+        .prepare("INSERT INTO objects VALUES (?,?,?)")
+        .map_err(crate::external)?;
+    while let Some(row) = rows.next().map_err(crate::external)? {
+        cancel.check()?;
+        let name: String = row.get(0).map_err(crate::external)?;
+        let hash: Vec<u8> = row.get(1).map_err(crate::external)?;
+        let value = row.get_ref(2).map_err(crate::external)?;
+        let data = value.as_blob().map_err(crate::external)?;
+        let facts = facts_cache::decode(data, &name, &hash, &FactVersions::current())?;
+        let compact = facts_cache::encode_v3(&facts)?;
+        insert
+            .execute(params![name, hash, compact])
+            .map_err(crate::external)?;
+        profile::note("index.migration.objects", "operation", 1);
+    }
+    drop(insert);
+    drop(rows);
+    drop(query);
+    // All identifiers are compile-time owned, and each row is released before the next.
+    for (table, width) in [
+        ("metadata", 2),
+        ("object_semantics", 2),
+        ("documents", 2),
+        ("document_semantics", 2),
+        ("registrar_links", 3),
+        ("git_inputs", 5),
+    ] {
+        let mut query = old
+            .prepare(&format!("SELECT * FROM {table}"))
+            .map_err(crate::external)?;
+        let mut rows = query.query([]).map_err(crate::external)?;
+        let sql = format!(
+            "INSERT INTO {table} VALUES ({})",
+            vec!["?"; width].join(",")
+        );
+        let mut insert = tx.prepare(&sql).map_err(crate::external)?;
+        while let Some(row) = rows.next().map_err(crate::external)? {
+            cancel.check()?;
+            let values = (0..width)
+                .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(crate::external)?;
+            insert
+                .execute(rusqlite::params_from_iter(values))
+                .map_err(crate::external)?;
+        }
+    }
+    tx.execute(
+        "UPDATE metadata SET value=? WHERE key='facts_contract'",
+        [facts_cache::CONTRACT_V3],
+    )
+    .map_err(crate::external)?;
+    cancel.check()?;
+    tx.commit().map_err(crate::external)?;
+    Ok(())
 }

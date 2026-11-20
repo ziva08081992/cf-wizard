@@ -52,14 +52,36 @@ pub enum Event {
     Done {
         generation: u64,
         callback: Option<u64>,
+        preview_ordinal: Option<u64>,
         outcome: Result<Update>,
         log: Option<Arc<OperationLog>>,
     },
     Progress(String, Value),
     Poll(u64, Result<String>),
+    ShutdownFinished(bool),
     Platforms(Vec<Platform>),
     PlatformChecked(String, String, Result<Platform>),
 }
+pub(crate) struct Retained {
+    plan: Option<Box<dyn PreparedPlan>>,
+    source: Option<Arc<dyn MetadataSource>>,
+    git: Option<Arc<GitSource>>,
+    client: Option<Arc<dyn GitProvider>>,
+    task: Option<TaskResult>,
+}
+
+impl Retained {
+    pub(crate) fn release(self, trace: &crate::shutdown::Trace, probe: Option<&Path>) -> bool {
+        trace.phase("plan-release-start");
+        let success = crate::close_probe::release_plan(self.plan, probe);
+        trace.phase("plan-release-end");
+        trace.phase("source-provider-refs-release-start");
+        drop((self.source, self.git, self.client, self.task));
+        trace.phase("source-provider-refs-release-end");
+        success
+    }
+}
+
 pub struct Model {
     pub preferences: Settings,
     pub settings_path: PathBuf,
@@ -80,6 +102,7 @@ pub struct Model {
     pub status: String,
     pub status_kind: String,
     pub generation: u64,
+    pub preview_ordinal: u64,
     pub catalog_revision: u64,
     pub task_revision: u64,
     pub cancel: Cancellation,
@@ -161,6 +184,7 @@ impl Model {
             status: "Откройте XML-выгрузку или подключитесь к Git.".into(),
             status_kind: "idle".into(),
             generation: 0,
+            preview_ordinal: 0,
             catalog_revision: 0,
             task_revision: 0,
             cancel: Cancellation::default(),
@@ -326,9 +350,40 @@ impl Model {
     fn save_soon(&mut self) {
         self.dirty = Some(Instant::now());
     }
-    pub fn flush(&mut self) {
+    pub(crate) fn request_busy_close(&mut self) {
+        self.cancel.cancel();
+        self.notice(
+            "Операция выполняется",
+            "Дождитесь окончания операции. Поиск и сборка получили запрос отмены.",
+        );
+    }
+
+    pub(crate) fn take_retained(&mut self) -> Retained {
+        Retained {
+            plan: self.plan.take(),
+            source: self.source.take(),
+            git: self.git.take(),
+            client: self.client.take(),
+            task: self.task_filter.take(),
+        }
+    }
+
+    pub(crate) fn restore_retained(&mut self, data: Retained) {
+        self.plan = data.plan;
+        self.source = data.source;
+        self.git = data.git;
+        self.client = data.client;
+        self.task_filter = data.task;
+    }
+
+    pub(crate) fn flush_for_close(&mut self) -> &'static str {
+        self.platform_check = false;
+        self.flush()
+    }
+
+    fn flush(&mut self) -> &'static str {
         if self.dirty.take().is_none() {
-            return;
+            return "flush-clean";
         }
         for key in [
             "export",
@@ -342,9 +397,13 @@ impl Model {
                 .values
                 .insert(key.into(), self.values[key].clone());
         }
-        if let Err(e) = self.preferences.save(&self.settings_path) {
-            self.notice("Настройки", e.to_string());
-        }
+        let result = match self.preferences.save(&self.settings_path) {
+            Ok(()) => "flush-saved",
+            Err(e) => {
+                self.notice("Настройки", e.to_string());
+                "flush-failed"
+            }
+        };
         if std::mem::take(&mut self.platform_check) {
             let key = if self.preferences.build_mode == "ibcmd" {
                 "platform"
@@ -368,6 +427,7 @@ impl Model {
                 });
             }
         }
+        result
     }
     pub fn add_platforms(&mut self, rows: Vec<Platform>) {
         for p in rows {
@@ -422,21 +482,34 @@ impl Model {
         let cancel = self.cancel.clone();
         let generation = self.generation;
         let proxy = self.proxy.clone();
+        let preview_ordinal = (operation == Some("preview")).then(|| {
+            self.preview_ordinal = self.preview_ordinal.saturating_add(1);
+            self.preview_ordinal
+        });
         std::thread::spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(cancel, log.clone())))
-                    .unwrap_or_else(|_| {
-                        Err(Error::External(
-                            "Аварийная ошибка фоновой операции. Подробности в папке «Ошибки»."
-                                .into(),
-                        ))
-                    });
+            if let Some(ordinal) = preview_ordinal {
+                cf_application::memory_trace::mark(ordinal, "preview_start");
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cf_application::memory_trace::with_preview(preview_ordinal.unwrap_or(0), || {
+                    job(cancel, log.clone())
+                })
+            }))
+            .unwrap_or_else(|_| {
+                Err(Error::External(
+                    "Аварийная ошибка фоновой операции. Подробности в папке «Ошибки».".into(),
+                ))
+            });
             if let (Err(e), Some(log)) = (&result, &log) {
                 let _ = log.failure(&e.to_string());
+            }
+            if let Some(ordinal) = preview_ordinal {
+                cf_application::memory_trace::mark(ordinal, "preview_worker_done");
             }
             let _ = proxy.send_event(Event::Done {
                 generation,
                 callback,
+                preview_ordinal,
                 outcome: result,
                 log,
             });
@@ -492,7 +565,7 @@ impl Model {
             self.start("Открываю XML-выгрузку…",callback,Some("local-open"),move|c,log|{
                 c.check()?;let source:Arc<dyn MetadataSource>=Arc::new(LocalSource::open(&path)?);
                 let folder=directories.get(source.identity()).cloned().unwrap_or(fallback);
-                let index=indexing::status(source.as_ref(),Path::new(&folder))?;
+                let index=crate::profile::status(source.as_ref(),Path::new(&folder),log.as_deref())?;
                 if let Some(log)=log{log.value("source-opened",json!({"source":source.identity(),"configuration":source.catalog().name,"indexReady":index.ready}))?;}
                 let mut platforms=platform::discover(BuildMode::Designer);platforms.extend(platform::discover(BuildMode::Ibcmd));
                 Ok(Box::new(move|m|{m.add_platforms(platforms);m.install_source(source,None,index,folder);}))
@@ -513,7 +586,7 @@ impl Model {
             self.start("Читаю закреплённую ревизию Git…",callback,Some("git-open"),move|c,log|{
                 let branches=client.branches(&c)?;let source=Arc::new(GitSource::open(&connection,client.clone(),&c)?);
                 let folder=directories.get(source.preference_key()).cloned().unwrap_or(fallback);
-                let index=indexing::status(source.as_ref(),Path::new(&folder))?;
+                let index=crate::profile::status(source.as_ref(),Path::new(&folder),log.as_deref())?;
                 if let Some(l)=log{l.value("source-opened",json!({"source":source.preference_key(),"revision":source.revision(),"indexReady":index.ready}))?;}
                 let mut platforms=platform::discover(BuildMode::Designer);platforms.extend(platform::discover(BuildMode::Ibcmd));
                 Ok(Box::new(move|m|{m.add_platforms(platforms);m.client=Some(client);m.branches=branches;m.install_source(source.clone(),Some(source),index,folder);}))
@@ -546,7 +619,8 @@ impl Model {
                         }
                     },
                 )?;
-                let status = indexing::status(source.as_ref(), Path::new(&directory))?;
+                let status =
+                    crate::profile::status(source.as_ref(), Path::new(&directory), log.as_deref())?;
                 if let Some(log) = log {
                     log.value("index-updated", json!(report))?;
                 }
@@ -579,7 +653,9 @@ impl Model {
         let selected = self.selected.clone();
         let excluded = self.excluded.clone();
         self.start("Определяю зависимости…",callback,Some("preview"),move|c,log|{
-            let index_started=Instant::now();
+crate::profile::run("preview",source.as_ref(),Some((&selected,&excluded)),log.as_deref(),|| -> Result<Update> {
+            cf_application::profile::identity("index_requested",if index.is_some(){"true"}else{"false"});
+let index_started=Instant::now();
             let opened=index.map(|path|IndexReader::open(&path,source.manifest().map_or(Proof::Local(source.identity()),Proof::Git))).transpose();
             let index_open_ms=index_started.elapsed().as_secs_f64()*1000.;
             let index_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-index-open",json!({"milliseconds":index_open_ms,"success":opened.is_ok(),"hasIndex":matches!(&opened,Ok(Some(_)))})));
@@ -589,8 +665,24 @@ impl Model {
             let engine_ms=engine_started.elapsed().as_secs_f64()*1000.;
             let engine_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-engine",json!({"milliseconds":engine_ms,"success":prepared.is_ok()})));
             let plan=preserve_operation_error(prepared,engine_log)?;
-            if let Some(log)=log{log.value("dependencies-ready",json!({"kernel":"datafrog-2.0.1","selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings,"diagnostics":plan.composition().diagnostics,"choices":plan.composition().choices,"immediateReasons":plan.composition().reasons.len(),"metrics":plan.composition().metrics}))?;}
-            Ok(Box::new(move|m|{let count=plan.composition().stubs.len();let complete=plan.composition().complete();m.plan=Some(plan);m.package=None;m.status=format!("Предпросмотр {} · объектов {} · заглушек {} · исключено {}",if complete{"готов"}else{"неполный"},m.selected.len(),count,m.excluded.len());m.status_kind=if complete{"ok"}else{"error"}.into();m.signals.push(("stubsChanged".into(),vec![m.stubs()]));}))
+            if let Some(log)=&log{log.value("dependencies-ready",json!({"kernel":"datafrog-2.0.1","selected":plan.composition().selected,"stubs":plan.composition().stubs,"warnings":plan.composition().warnings,"diagnostics":plan.composition().diagnostics,"choices":plan.composition().choices,"immediateReasons":plan.composition().reasons.len(),"metrics":plan.composition().metrics}))?;}
+            Ok(Box::new(move |m| {
+                let count = plan.composition().stubs.len();
+                let complete = plan.composition().complete();
+                let old_plan = m.plan.replace(plan);
+                cf_application::memory_trace::mark(m.preview_ordinal, "preview_old_drop_start");
+                drop(old_plan);
+                cf_application::memory_trace::mark(m.preview_ordinal, "preview_old_drop_end");
+                m.package = None;
+                m.status = format!(
+                    "Предпросмотр {} · объектов {} · заглушек {} · исключено {}",
+                    if complete { "готов" } else { "неполный" }, m.selected.len(), count, m.excluded.len(),
+                );
+                m.status_kind = if complete { "ok" } else { "error" }.into();
+                m.signals.push(("stubsChanged".into(), vec![m.stubs()]));
+                cf_application::memory_trace::mark(m.preview_ordinal, "preview_stubs_ready");
+            }))
+})
         })
     }
     fn build(&mut self, callback: Option<u64>) -> Result<()> {
@@ -777,12 +869,22 @@ impl Model {
         let folder = self.values["index_directory"].clone();
         self.index = None;
         self.invalidate_plan();
+        let diagnostic_folder = PathBuf::from(&self.values["logs"]);
         let _ = self.start(
             "Проверяю индекс…",
             None,
             None,
-            move |_, _| {
-                let status = indexing::status(source.as_ref(), Path::new(&folder))?;
+            move |_, log| {
+                let diagnostic_log = if cf_application::profile::Context::enabled() {
+                    OperationLog::create(&diagnostic_folder, "index-readiness")
+                        .ok()
+                        .map(Arc::new)
+                } else {
+                    None
+                };
+                let log = log.or(diagnostic_log);
+                let status =
+                    crate::profile::status(source.as_ref(), Path::new(&folder), log.as_deref())?;
                 Ok(Box::new(move |m| {
                     m.index = Some(status);
                     m.status = "Папка индекса выбрана.".into();
@@ -809,7 +911,7 @@ impl Model {
             let client=git::factory(&connection,token.clone())?;let branches=client.branches(&c)?;
             let source=Arc::new(GitSource::open(&connection,client.clone(),&c)?);
             let folder=directories.get(source.preference_key()).cloned().unwrap_or(folder);
-            let index=indexing::status(source.as_ref(),Path::new(&folder))?;
+            let index=crate::profile::status(source.as_ref(),Path::new(&folder),log.as_deref())?;
             if remember {vault::save(&target,token.as_str())?;}
             if let Some(log)=log{log.value("connected",json!({"provider":connection.provider,"repository":connection.repository,"branch":connection.branch,"revision":source.revision(),"remembered":remember}))?;}
             Ok(Box::new(move|m|{m.client=Some(client);m.branches=branches;m.preferences.git_settings=connection;m.preferences.source_mode="git".into();m.install_source(source.clone(),Some(source),index,folder);}))
@@ -890,7 +992,21 @@ impl Model {
                     "build"=>{self.build(id)?;return Ok(None);}
                     "logs"=>{let path=Path::new(&self.values["logs"]);std::fs::create_dir_all(path).map_err(cf_infrastructure::external)?;shell_open(path)?;}
                     "package"=>{if let Some(path)=&self.package{shell_open(path)?;}}
-                    "journal"=>{if let Some(path)=self.last_log.clone(){self.start("Читаю журнал…",id,None,move|_,_|{let text=journal::read(&path)?;Ok(Box::new(move|m|m.signals.push(("journalOpened".into(),vec![json!(path),json!(text)]))))})?;return Ok(None);}}
+                    "journal"=>{
+                        if let Some(path)=self.last_log.clone(){
+                            let previous_status=self.status.clone();
+                            let previous_kind=self.status_kind.clone();
+                            self.start("Читаю журнал…",id,None,move|_,_|{
+                                let text=journal::read(&path)?;
+                                Ok(Box::new(move|m|{
+                                    m.status=previous_status;
+                                    m.status_kind=previous_kind;
+                                    m.signals.push(("journalOpened".into(),vec![json!(path),json!(text)]));
+                                }))
+                            })?;
+                            return Ok(None);
+                        }
+                    }
                     "about"=>self.notice("О программе",format!("Мастер технической CF · {}\nПолностью на Rust: WebView2, SQLite.\n\nАлгоритм подготовки технической конфигурации перенесён из partial_cf.py проекта alonehobo/1c-partial-cf. Большое спасибо alonehobo за исходный скрипт.\n\nВнешние команды установленной 1С выполняют сборку CF и обратную проверку.",env!("CARGO_PKG_VERSION"))),
                     "cancel-git-task"=>{self.cancel.cancel();self.cancelling=true;}
                     "mark-git-task" if !self.busy=>{if let Some(result)=&self.task_filter{self.selected.extend(result.objects.iter().cloned());self.invalidate_plan();}}
@@ -929,10 +1045,16 @@ impl Model {
             });
         }
     }
-    pub fn apply(&mut self, generation: u64, outcome: Result<Update>) {
+    pub fn apply(&mut self, generation: u64, preview: bool, outcome: Result<Update>) -> bool {
         if generation != self.generation {
-            return;
+            return false;
         }
+        let outcome = if preview {
+            outcome.and_then(|update| self.cancel.check().map(|()| update))
+        } else {
+            outcome
+        };
+        let accepted = outcome.is_ok();
         self.busy = false;
         self.cancelling = false;
         match outcome {
@@ -953,6 +1075,7 @@ impl Model {
                 );
             }
         }
+        accepted
     }
 }
 #[cfg(windows)]
@@ -1075,5 +1198,113 @@ mod stub_group_tests {
         assert_eq!(preserve_operation_error(Ok(7), Ok(())).unwrap(), 7);
         let result = preserve_operation_error(Ok(7), Err(Error::External("log failure".into())));
         assert!(matches!(result, Err(Error::External(message)) if message == "log failure"));
+    }
+}
+
+#[cfg(all(windows, test))]
+mod close_tests {
+    use super::*;
+    use tao::{event_loop::EventLoopBuilder, platform::windows::EventLoopBuilderExtWindows};
+
+    struct TestPlan(cf_domain::Plan);
+
+    impl PreparedPlan for TestPlan {
+        fn composition(&self) -> &cf_domain::Plan {
+            &self.0
+        }
+
+        fn write(
+            &self,
+            _: &dyn MetadataSource,
+            _: &BTreeSet<String>,
+            _: &Path,
+            _: &Path,
+            _: &Cancellation,
+        ) -> Result<cf_application::StagedPackage> {
+            unreachable!("the rollback test only installs a plan")
+        }
+    }
+
+    fn check_preview_rollback(model: &mut Model, dir: &Path) {
+        let package = dir.join("previous.cf");
+        model.plan = Some(Box::new(TestPlan(cf_domain::Plan {
+            source_fingerprint: "previous-preview".into(),
+            selected: Default::default(),
+            stubs: Default::default(),
+            members: Default::default(),
+            source_hashes: Default::default(),
+            warnings: vec![],
+            diagnostics: vec![],
+            choices: vec![],
+            reasons: vec![],
+            metrics: Default::default(),
+            reader_profile: Default::default(),
+        })));
+        model.package = Some(package.clone());
+        for error in [Error::Cancelled, Error::External("reader failure".into())] {
+            assert!(!model.apply(model.generation, true, Err(error)));
+            assert_eq!(
+                model
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .composition()
+                    .source_fingerprint,
+                "previous-preview"
+            );
+            assert_eq!(model.package.as_ref(), Some(&package));
+        }
+        assert!(!model.apply(
+            model.generation + 1,
+            true,
+            Ok(Box::new(|_| panic!("stale completion must be ignored"))),
+        ));
+        model.cancel.cancel();
+        assert!(!model.apply(
+            model.generation,
+            true,
+            Ok(Box::new(|_| panic!("cancelled completion must be ignored"))),
+        ));
+        assert_eq!(
+            model
+                .plan
+                .as_ref()
+                .unwrap()
+                .composition()
+                .source_fingerprint,
+            "previous-preview"
+        );
+        assert_eq!(model.package.as_ref(), Some(&package));
+    }
+
+    #[test]
+    fn close_flush_saves_dirty_settings_suppresses_pending_validation_and_preserves_error_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventLoopBuilder::<Event>::with_user_event()
+            .with_any_thread(true)
+            .build();
+        let mut model = Model::new(dir.path().join("paths.json"), events.create_proxy());
+        check_preview_rollback(&mut model, dir.path());
+        model
+            .values
+            .insert("destination".into(), "pending-destination".into());
+        model.dirty = Some(Instant::now());
+        model.platform_check = true;
+        assert_eq!(model.flush_for_close(), "flush-saved");
+        assert!(!model.platform_check);
+        assert_eq!(
+            Settings::load(&model.settings_path).values["destination"],
+            "pending-destination"
+        );
+        assert_eq!(model.flush_for_close(), "flush-clean");
+        model.settings_path = dir.path().to_owned();
+        model.dirty = Some(Instant::now());
+        assert_eq!(model.flush_for_close(), "flush-failed");
+        assert_eq!(model.notices.last().unwrap().0, "Настройки");
+        model.busy = true;
+        model.request_busy_close();
+        assert!(model.busy);
+        assert!(matches!(model.cancel.check(), Err(Error::Cancelled)));
+        assert_eq!(model.notices.last().unwrap().0, "Операция выполняется");
     }
 }

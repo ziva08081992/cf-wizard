@@ -1,5 +1,9 @@
 //! Native WebView host. Local resources and typed, origin-checked IPC only.
-use crate::model::{Event, Model};
+use crate::{
+    close_probe,
+    model::{Event, Model, Retained},
+    shutdown::{self, Handoff, Trace},
+};
 use cf_domain::{BuildMode, Error, Result};
 use cf_infrastructure::{platform, settings};
 use serde_json::{Value, json};
@@ -16,6 +20,27 @@ use tao::{
     window::WindowBuilder,
 };
 use wry::{WebContext, WebView, WebViewBuilder};
+
+// Tao drops the event handler on the UI thread before exiting the process.
+// These fields drop in declaration order: the controller needs a live HWND.
+struct WindowUi {
+    webview: WebView,
+    _context: WebContext,
+    window: tao::window::Window,
+}
+
+impl std::ops::Deref for WindowUi {
+    type Target = WebView;
+    fn deref(&self) -> &WebView {
+        &self.webview
+    }
+}
+
+impl WindowUi {
+    fn hide(&self) {
+        self.window.set_visible(false);
+    }
+}
 
 fn emit(view: &WebView, name: &str, args: Vec<Value>) {
     let code = format!(
@@ -93,6 +118,20 @@ pub fn run() -> Result<()> {
         model.preferences.source_mode = "local".into();
     }
     let report = option("--smoke-report").map(PathBuf::from);
+    let mut closing = false;
+    let mut trace = None;
+    let mut busy_logged = false;
+    let mut repeated_close = false;
+    let mut probe = if args.iter().any(|a| a == "--shutdown-smoke") {
+        if report.is_some() || option("--data-dir").is_none() || option("--export").is_none() {
+            return Err(Error::Invalid(
+                "Close check requires separate --data-dir and --export".into(),
+            ));
+        }
+        Some(close_probe::Probe::new(base.clone()))
+    } else {
+        None
+    };
     let mut smoke_requested = false;
     let exercise = args.iter().any(|a| a == "--exercise-ui");
     let mut ready_seconds = None;
@@ -151,7 +190,30 @@ pub fn run() -> Result<()> {
                 "WebView2: {e}. Проверьте установленный Microsoft Edge WebView2 Runtime."
             ))
         })?;
+    let view = WindowUi {
+        webview: view,
+        _context: context,
+        window,
+    };
     events.run(move|event,_,control|{
+        if closing {
+            *control = ControlFlow::Wait;
+            match event {
+                TaoEvent::UserEvent(Event::ShutdownFinished(success)) => {
+                    *control = ControlFlow::ExitWithCode(if success { 0 } else { 1 });
+                }
+                TaoEvent::WindowEvent { event: WindowEvent::CloseRequested, .. } if !repeated_close => {
+                    repeated_close = true;
+                    if let Some(trace) = &trace { Trace::phase(trace, "repeat-close"); }
+                    if probe.is_some() { let _ = fs::write(base.join("close-repeated"), b"closing"); }
+                }
+                TaoEvent::LoopDestroyed => {
+                    if let Some(trace) = &trace { Trace::phase(trace, "loop-destroyed"); }
+                }
+                _ => {}
+            }
+            return;
+        }
         *control=ControlFlow::WaitUntil(Instant::now()+Duration::from_millis(150));
         match event {
             TaoEvent::UserEvent(Event::Rpc(request))=>{
@@ -180,9 +242,14 @@ pub fn run() -> Result<()> {
                     paint(&view,&mut model);
                 }
             }
-            TaoEvent::UserEvent(Event::Done{generation,callback,outcome,log})=>{
-                model.apply(generation,outcome);if let Some(log)=log{let _=log.value("finished",json!({"status":model.status_kind}));}
+            TaoEvent::UserEvent(Event::Done{generation,callback,preview_ordinal,outcome,log})=>{
+                let accepted_preview = model.apply(generation,preview_ordinal.is_some(),outcome);
+                if let Some(log)=log{let _=log.value("finished",json!({"status":model.status_kind}));}
                 if let Some(id)=callback{reply(&view,id,model.snapshot());}paint(&view,&mut model);
+                if let Some(ordinal)=preview_ordinal {
+                    let phase = if accepted_preview { "preview_idle" } else { "preview_discarded" };
+                    cf_application::memory_trace::mark(ordinal,phase);
+                }
             }
             TaoEvent::UserEvent(Event::Progress(kind,value))=>{
                 if kind=="gitTaskProgress"{emit(&view,&kind,vec![value]);}
@@ -198,11 +265,54 @@ pub fn run() -> Result<()> {
                 if generation==model.generation {match outcome{Ok(sha)=>{model.poll_info=if model.git.as_ref().is_some_and(|g|g.revision()!=sha){"В ветке есть изменения. Нажмите «Обновить ветку».".into()}else{"SHA ветки проверен · изменений нет".into()};}Err(error)=>model.poll_info=format!("Проверка SHA: {error}")}paint(&view,&mut model);}
             }
             TaoEvent::WindowEvent{event:WindowEvent::CloseRequested,..}=>{
-                if model.busy{model.cancel.cancel();model.notice("Операция выполняется","Дождитесь окончания операции. Поиск и сборка получили запрос отмены.");paint(&view,&mut model);}
-                else{model.flush();*control=ControlFlow::Exit;}
+                let trace = trace.get_or_insert_with(|| {
+                    let trace = Trace::open(std::path::Path::new(&model.values["logs"]), cf_application::profile::Context::enabled());
+                    trace.phase("requested");
+                    cf_application::memory_trace::mark(model.preview_ordinal, "close_requested");
+                    trace
+                });
+                if model.busy {
+                    if !busy_logged { trace.phase("busy-cancel"); busy_logged = true; }
+                    model.request_busy_close();
+                    paint(&view, &mut model);
+                    return;
+                }
+                trace.phase("flush-start");
+                trace.phase(model.flush_for_close());
+                let worker_trace = trace.clone();
+                let done_trace = trace.clone();
+                let completion = proxy.clone();
+                let probe_dir = probe.as_ref().map(|_| base.clone());
+                trace.phase("handoff-start");
+                let sender = shutdown::worker(move |state: Retained| {
+                    worker_trace.phase("worker-start");
+                    state.release(&worker_trace, probe_dir.as_deref())
+                }, move |ok| {
+                    done_trace.phase(if ok { "worker-done" } else { "worker-failed" });
+                    let _ = completion.send_event(Event::ShutdownFinished(ok));
+                });
+                closing = true;
+                match shutdown::handoff(sender, || model.take_retained()) {
+                    Handoff::Accepted => {
+                        trace.phase("handoff-accepted");
+                        view.hide();
+                        *control = ControlFlow::Wait;
+                    }
+                    Handoff::SpawnFailed => { trace.phase("spawn-failed"); *control = ControlFlow::Exit; }
+                    Handoff::Returned(data) => {
+                        model.restore_retained(data);
+                        trace.phase("send-failed");
+                        *control = ControlFlow::Exit;
+                    }
+                }
             }
             TaoEvent::MainEventsCleared=>{
                 model.tick();
+                if ready && let Some(probe) = &mut probe && let Err(error) = probe.tick(&mut model) {
+                    let _ = fs::write(base.join("close-error"), error.to_string());
+                    *control = ControlFlow::ExitWithCode(1);
+                    return;
+                }
                 if ready&&report.is_some()&&!smoke_requested&&!model.busy&&(!exercise||model.source.is_some()){
                     smoke_requested=true;
                     if exercise{let _=view.evaluate_script(include_str!("../ui/smoke.js"));}

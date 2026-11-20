@@ -36,10 +36,16 @@
     selectedOnly.click();
     state = await rpc("command", "preview");
     check("preview completes", state.statusKind === "ok" && state.canOpenJournal && !state.busy);
-    await rpc("command", "journal");
+    const previewStatus = state.status;
+    const previewKind = state.statusKind;
+    state = await rpc("command", "journal");
     await wait(() => document.querySelector(".cf-journal").open, "built-in journal");
-    check("journal rendered in app", document.querySelector("[data-journal-text]").value.includes("dependencies-ready"));
+    const journalText = document.querySelector("[data-journal-text]").value;
     document.querySelector(".cf-journal button[type=submit]").click();
+    await wait(() => !document.querySelector(".cf-journal").open &&
+      document.querySelector("[data-status]").textContent === previewStatus, "journal status restored");
+    check("journal rendered and status restored", journalText.includes("dependencies-ready") &&
+      !state.busy && state.status === previewStatus && state.statusKind === previewKind);
     document.querySelector('[data-action="help"]').click();
     check("embedded help", document.querySelector(".cf-help").open);
     document.querySelector(".cf-help button[type=submit]").click();

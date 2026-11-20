@@ -1,6 +1,7 @@
 //! Static VALUE/ЗНАЧЕНИЕ profile. Query strings are included intentionally;
 //! comment optionality is determined by a separate comment-free observation.
 use crate::source_query::{TypePath, literal};
+use cf_application::profile;
 use cf_domain::fold;
 
 fn identifier(c: char) -> bool {
@@ -20,74 +21,90 @@ fn whitespace(source: &str, start: usize) -> usize {
         .map_or(source.len(), |(offset, _)| start + offset)
 }
 pub fn module_values(source: &str) -> Vec<TypePath> {
-    let mut output = vec![];
-    let mut seen = std::collections::BTreeSet::new();
-    let mut at = 0;
-    while at < source.len() {
-        let c = source[at..].chars().next().expect("boundary");
-        if !identifier(c) {
-            at += c.len_utf8();
-            continue;
-        }
-        let (call, end) = word(source, at);
-        let member = source[..at].ends_with('.');
-        at = end;
-        if member || !matches!(fold(call).as_str(), "value" | "значение") {
-            continue;
-        }
-        let opening = whitespace(source, end);
-        if source.as_bytes().get(opening) != Some(&b'(') {
-            continue;
-        }
-        let mut cursor = whitespace(source, opening + 1);
-        let mut parts = vec![];
-        loop {
-            let (part, end) = word(source, cursor);
-            if part.is_empty() {
-                break;
-            }
-            parts.push(part.to_owned());
-            cursor = end;
-            if source.as_bytes().get(cursor) != Some(&b'.') {
-                break;
-            }
-            cursor += 1;
-        }
-        let close = whitespace(source, cursor);
-        if source.as_bytes().get(close) == Some(&b')') {
-            for value in literal(&parts) {
-                if seen.insert(value.clone()) {
-                    output.push(value);
+    profile::value(
+        "bsl.literal_scan",
+        "engine.scan",
+        source.len(),
+        None,
+        || {
+            let mut output = vec![];
+            let mut seen = std::collections::BTreeSet::new();
+            let mut at = 0;
+            while at < source.len() {
+                let c = source[at..].chars().next().expect("boundary");
+                if !identifier(c) {
+                    at += c.len_utf8();
+                    continue;
+                }
+                let (call, end) = word(source, at);
+                let member = source[..at].ends_with('.');
+                at = end;
+                if member || !matches!(fold(call).as_str(), "value" | "значение") {
+                    continue;
+                }
+                let opening = whitespace(source, end);
+                if source.as_bytes().get(opening) != Some(&b'(') {
+                    continue;
+                }
+                let mut cursor = whitespace(source, opening + 1);
+                let mut parts = vec![];
+                loop {
+                    let (part, end) = word(source, cursor);
+                    if part.is_empty() {
+                        break;
+                    }
+                    parts.push(part.to_owned());
+                    cursor = end;
+                    if source.as_bytes().get(cursor) != Some(&b'.') {
+                        break;
+                    }
+                    cursor += 1;
+                }
+                let close = whitespace(source, cursor);
+                if source.as_bytes().get(close) == Some(&b')') {
+                    for value in literal(&parts) {
+                        if seen.insert(value.clone()) {
+                            output.push(value);
+                        }
+                    }
                 }
             }
-        }
-    }
-    output
+            output
+        },
+    )
 }
 pub fn without_bsl_comments(source: &str) -> String {
-    let mut output = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut quoted = false;
-    while let Some(c) = chars.next() {
-        if c == '"' {
-            output.push(c);
-            if quoted && chars.peek() == Some(&'"') {
-                output.push(chars.next().expect("peek"));
-            } else {
-                quoted = !quoted;
-            }
-        } else if !quoted && c == '/' && chars.peek() == Some(&'/') {
-            for c in chars.by_ref() {
-                if c == '\n' {
+    profile::value(
+        "bsl.comment_scan",
+        "engine.scan",
+        source.len(),
+        None,
+        || {
+            let mut output = String::with_capacity(source.len());
+            let mut chars = source.chars().peekable();
+            let mut quoted = false;
+            while let Some(c) = chars.next() {
+                if c == '"' {
                     output.push(c);
-                    break;
+                    if quoted && chars.peek() == Some(&'"') {
+                        output.push(chars.next().expect("peek"));
+                    } else {
+                        quoted = !quoted;
+                    }
+                } else if !quoted && c == '/' && chars.peek() == Some(&'/') {
+                    for c in chars.by_ref() {
+                        if c == '\n' {
+                            output.push(c);
+                            break;
+                        }
+                    }
+                } else {
+                    output.push(c);
                 }
             }
-        } else {
-            output.push(c);
-        }
-    }
-    output
+            output
+        },
+    )
 }
 #[cfg(test)]
 mod tests {

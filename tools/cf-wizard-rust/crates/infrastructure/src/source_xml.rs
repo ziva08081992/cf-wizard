@@ -1,6 +1,7 @@
 //! Namespace-scoped source view. Tokenization and byte spans belong to `xml`.
 //! A frame is allocated only when xmlns bindings change, not for every node.
 use crate::xml::{Xml, unescape};
+use cf_application::profile;
 use cf_domain::{
     Error, Result,
     package_plan::{XmlPart, XmlValue},
@@ -46,73 +47,78 @@ pub(crate) fn ncname(text: &str) -> bool {
 }
 impl SourceXml {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let xml = Xml::parse(bytes)?;
-        let mut result = Self {
-            xml,
-            scopes: vec![Scope {
-                parent: None,
-                bindings: BTreeMap::from([
-                    ("xml".into(), XML.into()),
-                    (String::new(), String::new()),
-                ]),
-            }],
-            node_scope: vec![],
-            names: vec![],
-            ordinals: vec![],
-        };
-        let mut sibling_counts: BTreeMap<(Option<usize>, ExpandedName), usize> = BTreeMap::new();
-        for id in 0..result.xml.elements.len() {
-            let element = &result.xml.elements[id];
-            let parent_scope = element.parent.map_or(0, |p| result.node_scope[p]);
-            let mut bindings = BTreeMap::new();
-            for attr in &element.attributes {
-                let prefix = if attr.name == "xmlns" {
-                    Some("")
-                } else {
-                    attr.name.strip_prefix("xmlns:")
-                };
-                if let Some(prefix) = prefix {
-                    if prefix == "xmlns"
-                        || attr.value == XMLNS
-                        || attr.value == XML && prefix != "xml"
-                        || prefix == "xml" && attr.value != XML
-                        || !prefix.is_empty() && attr.value.is_empty()
-                    {
-                        return Err(invalid("Недопустимое объявление XML namespace"));
-                    }
-                    bindings.insert(prefix.into(), attr.value.clone());
-                }
-            }
-            let scope = if bindings.is_empty() {
-                parent_scope
-            } else {
-                let index = result.scopes.len();
-                result.scopes.push(Scope {
-                    parent: Some(parent_scope),
-                    bindings,
-                });
-                index
+        profile::measure("xml.parse", "document", bytes.len(), None, || {
+            let xml = profile::measure("xml.spans", "xml.parse", bytes.len(), None, || {
+                Xml::parse(bytes)
+            })?;
+            let mut result = Self {
+                xml,
+                scopes: vec![Scope {
+                    parent: None,
+                    bindings: BTreeMap::from([
+                        ("xml".into(), XML.into()),
+                        (String::new(), String::new()),
+                    ]),
+                }],
+                node_scope: vec![],
+                names: vec![],
+                ordinals: vec![],
             };
-            result.node_scope.push(scope);
-            let name = result.resolve(id, &result.xml.elements[id].name, false)?;
-            let count = sibling_counts
-                .entry((result.xml.elements[id].parent, name.clone()))
-                .or_default();
-            result.ordinals.push(*count);
-            *count += 1;
-            result.names.push(name);
-            let mut attributes = BTreeMap::new();
-            for attr in &result.xml.elements[id].attributes {
-                if attr.name == "xmlns" || attr.name.starts_with("xmlns:") {
-                    continue;
+            let mut sibling_counts: BTreeMap<(Option<usize>, ExpandedName), usize> =
+                BTreeMap::new();
+            for id in 0..result.xml.elements.len() {
+                let element = &result.xml.elements[id];
+                let parent_scope = element.parent.map_or(0, |p| result.node_scope[p]);
+                let mut bindings = BTreeMap::new();
+                for attr in &element.attributes {
+                    let prefix = if attr.name == "xmlns" {
+                        Some("")
+                    } else {
+                        attr.name.strip_prefix("xmlns:")
+                    };
+                    if let Some(prefix) = prefix {
+                        if prefix == "xmlns"
+                            || attr.value == XMLNS
+                            || attr.value == XML && prefix != "xml"
+                            || prefix == "xml" && attr.value != XML
+                            || !prefix.is_empty() && attr.value.is_empty()
+                        {
+                            return Err(invalid("Недопустимое объявление XML namespace"));
+                        }
+                        bindings.insert(prefix.into(), attr.value.clone());
+                    }
                 }
-                let expanded = result.resolve(id, &attr.name, true)?;
-                if attributes.insert(expanded, ()).is_some() {
-                    return Err(invalid("Повтор XML-атрибута с одинаковым expanded name"));
+                let scope = if bindings.is_empty() {
+                    parent_scope
+                } else {
+                    let index = result.scopes.len();
+                    result.scopes.push(Scope {
+                        parent: Some(parent_scope),
+                        bindings,
+                    });
+                    index
+                };
+                result.node_scope.push(scope);
+                let name = result.resolve(id, &result.xml.elements[id].name, false)?;
+                let count = sibling_counts
+                    .entry((result.xml.elements[id].parent, name.clone()))
+                    .or_default();
+                result.ordinals.push(*count);
+                *count += 1;
+                result.names.push(name);
+                let mut attributes = BTreeMap::new();
+                for attr in &result.xml.elements[id].attributes {
+                    if attr.name == "xmlns" || attr.name.starts_with("xmlns:") {
+                        continue;
+                    }
+                    let expanded = result.resolve(id, &attr.name, true)?;
+                    if attributes.insert(expanded, ()).is_some() {
+                        return Err(invalid("Повтор XML-атрибута с одинаковым expanded name"));
+                    }
                 }
             }
-        }
-        Ok(result)
+            Ok(result)
+        })
     }
     fn binding(&self, id: usize, prefix: &str) -> Option<&str> {
         let mut scope = Some(self.node_scope[id]);
@@ -172,13 +178,19 @@ impl SourceXml {
         steps.reverse();
         steps
     }
-    /// Stable address separates same-named declarations, fields and nested columns.
-    pub fn address(&self, id: usize) -> String {
-        self.path(id)
-            .iter()
-            .map(|step| format!("{{{}}}{}[{}]", step.name.uri, step.name.local, step.ordinal))
-            .collect::<Vec<_>>()
-            .join("/")
+    /// XML parser order guarantees each parent address is already available.
+    pub fn addresses(&self, prefix: &str) -> Vec<String> {
+        let mut addresses: Vec<String> = Vec::with_capacity(self.xml.elements.len());
+        for (id, element) in self.xml.elements.iter().enumerate() {
+            let parent = element.parent.map_or(prefix, |parent| &addresses[parent]);
+            let name = &self.names[id];
+            let ordinal = self.ordinals[id];
+            addresses.push(format!(
+                "{parent}/{{{}}}{}[{ordinal}]",
+                name.uri, name.local
+            ));
+        }
+        addresses
     }
     pub fn value(&self, id: usize) -> Result<XmlValue> {
         self.filtered_value(id, &BTreeSet::new(), &BTreeSet::new())

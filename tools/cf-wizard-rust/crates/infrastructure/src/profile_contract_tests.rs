@@ -672,10 +672,25 @@ fn required_list_fallback_prefers_included_item_and_reports_empty_input() {
         .unwrap();
         if let Some(ordinal) = expected {
             assert!(recipe.composition.complete());
-            let output = recipe.built["DocumentJournal.Entries"]
-                .output()
+            let path = "DocumentJournals/Entries.xml";
+            let compiled = recipe.compiled.as_ref().unwrap();
+            let cf_domain::package_plan::FileOperation::Project { edits, .. } =
+                &compiled.projection.files[path].operation
+            else {
+                panic!("expected projected journal");
+            };
+            let output = crate::xml::Xml::parse(recipe.frozen_text(path).unwrap().as_bytes())
                 .unwrap()
-                .descriptor;
+                .apply(
+                    edits
+                        .iter()
+                        .map(|edit| crate::xml::Edit {
+                            range: edit.start..edit.end,
+                            replacement: edit.replacement.clone(),
+                        })
+                        .collect(),
+                )
+                .unwrap();
             let (kept, dropped) = if ordinal == 0 {
                 ("Document.A", "Document.B")
             } else {

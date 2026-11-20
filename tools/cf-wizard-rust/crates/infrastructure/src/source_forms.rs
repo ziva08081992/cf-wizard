@@ -3,6 +3,7 @@ use crate::{
     source_query::{Fields, read as query_read},
     source_reader::SourceDocument,
 };
+use cf_application::profile;
 use cf_domain::{Result, fold};
 use std::collections::{BTreeMap, BTreeSet};
 pub type FormPath = (BTreeSet<String>, Vec<String>);
@@ -59,162 +60,175 @@ pub fn paths(document: &SourceDocument) -> Result<Vec<FormPath>> {
     Ok(read(document)?.paths)
 }
 pub fn read(document: &SourceDocument) -> Result<FormRead> {
-    let view = &document.view;
-    let xml = &view.xml;
-    let root = xml.root;
-    if view.names[root].local != "Form" {
-        return Ok(FormRead {
-            paths: vec![],
-            references: vec![],
-        });
-    }
-    let uri = &view.names[root].uri;
-    let child = |id: usize, local: &str| {
-        xml.elements[id]
-            .children
-            .iter()
-            .copied()
-            .find(|&n| view.names[n].local == local && &view.names[n].uri == uri)
-    };
-    let name = |id| xml.attr(id, "name").unwrap_or("").to_owned();
-    let mut attributes = BTreeMap::new();
-    let mut columns = BTreeMap::new();
-    let mut queries = BTreeMap::<String, Fields>::new();
-    let mut output = vec![];
-    let mut references = vec![];
-    if let Some(group) = child(root, "Attributes") {
-        for &attribute in &xml.elements[group].children {
-            if view.names[attribute].local != "Attribute" || &view.names[attribute].uri != uri {
-                continue;
+    profile::measure(
+        "form.read",
+        "engine.scan",
+        0,
+        Some(&document.facts.object),
+        || {
+            let view = &document.view;
+            let xml = &view.xml;
+            let root = xml.root;
+            if view.names[root].local != "Form" {
+                return Ok(FormRead {
+                    paths: vec![],
+                    references: vec![],
+                });
             }
-            let label = name(attribute);
-            let mut types = BTreeSet::new();
-            if let Some(id) = child(attribute, "Type") {
-                types.extend(type_targets(document, id, true)?);
-            }
-            if let Some(group) = child(attribute, "Columns").filter(|_| !label.is_empty()) {
-                for &column in &xml.elements[group].children {
-                    if &view.names[column].uri != uri {
+            let uri = &view.names[root].uri;
+            let child = |id: usize, local: &str| {
+                xml.elements[id]
+                    .children
+                    .iter()
+                    .copied()
+                    .find(|&n| view.names[n].local == local && &view.names[n].uri == uri)
+            };
+            let name = |id| xml.attr(id, "name").unwrap_or("").to_owned();
+            let mut attributes = BTreeMap::new();
+            let mut columns = BTreeMap::new();
+            let mut queries = BTreeMap::<String, Fields>::new();
+            let mut output = vec![];
+            let mut references = vec![];
+            if let Some(group) = child(root, "Attributes") {
+                for &attribute in &xml.elements[group].children {
+                    if view.names[attribute].local != "Attribute"
+                        || &view.names[attribute].uri != uri
+                    {
                         continue;
                     }
-                    let column_name = name(column);
-                    if let Some(id) = child(column, "Type").filter(|_| !column_name.is_empty()) {
-                        let targets = type_targets(document, id, false)?;
-                        if !targets.is_empty() {
-                            columns.insert((label.clone(), column_name), targets);
+                    let label = name(attribute);
+                    let mut types = BTreeSet::new();
+                    if let Some(id) = child(attribute, "Type") {
+                        types.extend(type_targets(document, id, true)?);
+                    }
+                    if let Some(group) = child(attribute, "Columns").filter(|_| !label.is_empty()) {
+                        for &column in &xml.elements[group].children {
+                            if &view.names[column].uri != uri {
+                                continue;
+                            }
+                            let column_name = name(column);
+                            if let Some(id) =
+                                child(column, "Type").filter(|_| !column_name.is_empty())
+                            {
+                                let targets = type_targets(document, id, false)?;
+                                if !targets.is_empty() {
+                                    columns.insert((label.clone(), column_name), targets);
+                                }
+                            }
                         }
+                    }
+                    if let Some(settings) = child(attribute, "Settings") {
+                        if let Some(main) = child(settings, "MainTable") {
+                            types.extend(document.targets(main).iter().cloned());
+                        }
+                        if let Some(query) = child(settings, "QueryText") {
+                            let mut unnamed = Fields::new();
+                            let fields = if label.is_empty() {
+                                &mut unnamed
+                            } else {
+                                queries.entry(label.clone()).or_default()
+                            };
+                            let result = query_read(&xml.text(query)?, fields);
+                            use cf_domain::source_facts::{
+                                MissingPolicy, Necessity, ReferenceFact, ReferenceStrength,
+                                ReferenceSurface, ReferenceTarget,
+                            };
+                            references.extend(result.required.into_iter().map(|key| {
+                                let (kind, name) =
+                                    key.split_once('.').expect("typed query endpoint");
+                                ReferenceFact {
+                                    fragment: document.node_ids[query].clone(),
+                                    surface: ReferenceSurface::Text,
+                                    target: ReferenceTarget {
+                                        kind: kind.into(),
+                                        name: name.into(),
+                                        ..Default::default()
+                                    },
+                                    strength: ReferenceStrength::Structured,
+                                    necessity: Necessity::Required,
+                                    missing: MissingPolicy::Diagnose,
+                                }
+                            }));
+                            output.extend(
+                                result
+                                    .paths
+                                    .into_iter()
+                                    .map(|(key, path)| (BTreeSet::from([key]), path)),
+                            );
+                        }
+                    }
+                    if !label.is_empty() && !types.is_empty() {
+                        attributes.insert(label, types);
                     }
                 }
             }
-            if let Some(settings) = child(attribute, "Settings") {
-                if let Some(main) = child(settings, "MainTable") {
-                    types.extend(document.targets(main).iter().cloned());
-                }
-                if let Some(query) = child(settings, "QueryText") {
-                    let mut unnamed = Fields::new();
-                    let fields = if label.is_empty() {
-                        &mut unnamed
-                    } else {
-                        queries.entry(label.clone()).or_default()
-                    };
-                    let result = query_read(&xml.text(query)?, fields);
-                    use cf_domain::source_facts::{
-                        MissingPolicy, Necessity, ReferenceFact, ReferenceStrength,
-                        ReferenceSurface, ReferenceTarget,
-                    };
-                    references.extend(result.required.into_iter().map(|key| {
-                        let (kind, name) = key.split_once('.').expect("typed query endpoint");
-                        ReferenceFact {
-                            fragment: document.node_ids[query].clone(),
-                            surface: ReferenceSurface::Text,
-                            target: ReferenceTarget {
-                                kind: kind.into(),
-                                name: name.into(),
-                                ..Default::default()
-                            },
-                            strength: ReferenceStrength::Structured,
-                            necessity: Necessity::Required,
-                            missing: MissingPolicy::Diagnose,
-                        }
-                    }));
-                    output.extend(
-                        result
-                            .paths
-                            .into_iter()
-                            .map(|(key, path)| (BTreeSet::from([key]), path)),
-                    );
+            // XML ownership replaces the ambiguous preceding raw name= search.
+            let mut item_paths = BTreeMap::new();
+            for (id, expanded) in view.names.iter().enumerate() {
+                if expanded.local == "DataPath"
+                    && &expanded.uri == uri
+                    && let Some(owner) = xml.elements[id].parent
+                {
+                    let label = name(owner);
+                    if !label.is_empty() {
+                        item_paths.insert(label, xml.text(id)?);
+                    }
                 }
             }
-            if !label.is_empty() && !types.is_empty() {
-                attributes.insert(label, types);
+            // Preserve the compatibility order: source text, then source attributes.
+            let texts = (0..xml.elements.len()).map(|id| xml.text(id));
+            let attribute_values = xml
+                .elements
+                .iter()
+                .flat_map(|element| &element.attributes)
+                .filter(|a| a.name != "xmlns" && !a.name.starts_with("xmlns:"))
+                .map(|a| Ok(a.value.clone()));
+            let mut seen = BTreeSet::new();
+            for value in texts.chain(attribute_values) {
+                let value = value?;
+                let Some(mut segments) = path_segments(&value) else {
+                    continue;
+                };
+                if segments.len() < 2 {
+                    continue;
+                }
+                if !seen.insert(value) {
+                    continue;
+                }
+                if segments.len() >= 4
+                    && segments[0] == "Items"
+                    && segments[2] == "CurrentData"
+                    && let Some(base) = item_paths.get(&segments[1]).and_then(|s| path_segments(s))
+                {
+                    let mut rewritten = base;
+                    rewritten.extend_from_slice(&segments[3..]);
+                    segments = rewritten;
+                }
+                if segments.len() >= 3 {
+                    if let Some(paths) = queries
+                        .get(&segments[0])
+                        .and_then(|fields| fields.get(&fold(&segments[1])))
+                    {
+                        output.extend(paths.iter().map(|(key, base)| {
+                            let mut path = base.clone();
+                            path.extend_from_slice(&segments[2..]);
+                            (BTreeSet::from([key.clone()]), path)
+                        }));
+                    }
+                    if let Some(types) = columns.get(&(segments[0].clone(), segments[1].clone())) {
+                        output.push((types.clone(), segments[2..].to_vec()));
+                    }
+                }
+                if let Some(types) = attributes.get(&segments[0]) {
+                    output.push((types.clone(), segments[1..].to_vec()));
+                }
             }
-        }
-    }
-    // XML ownership replaces the ambiguous preceding raw name= search.
-    let mut item_paths = BTreeMap::new();
-    for (id, expanded) in view.names.iter().enumerate() {
-        if expanded.local == "DataPath"
-            && &expanded.uri == uri
-            && let Some(owner) = xml.elements[id].parent
-        {
-            let label = name(owner);
-            if !label.is_empty() {
-                item_paths.insert(label, xml.text(id)?);
-            }
-        }
-    }
-    // Preserve the compatibility order: source text, then source attributes.
-    let texts = (0..xml.elements.len()).map(|id| xml.text(id));
-    let attribute_values = xml
-        .elements
-        .iter()
-        .flat_map(|element| &element.attributes)
-        .filter(|a| a.name != "xmlns" && !a.name.starts_with("xmlns:"))
-        .map(|a| Ok(a.value.clone()));
-    let mut seen = BTreeSet::new();
-    for value in texts.chain(attribute_values) {
-        let value = value?;
-        let Some(mut segments) = path_segments(&value) else {
-            continue;
-        };
-        if segments.len() < 2 {
-            continue;
-        }
-        if !seen.insert(value) {
-            continue;
-        }
-        if segments.len() >= 4
-            && segments[0] == "Items"
-            && segments[2] == "CurrentData"
-            && let Some(base) = item_paths.get(&segments[1]).and_then(|s| path_segments(s))
-        {
-            let mut rewritten = base;
-            rewritten.extend_from_slice(&segments[3..]);
-            segments = rewritten;
-        }
-        if segments.len() >= 3 {
-            if let Some(paths) = queries
-                .get(&segments[0])
-                .and_then(|fields| fields.get(&fold(&segments[1])))
-            {
-                output.extend(paths.iter().map(|(key, base)| {
-                    let mut path = base.clone();
-                    path.extend_from_slice(&segments[2..]);
-                    (BTreeSet::from([key.clone()]), path)
-                }));
-            }
-            if let Some(types) = columns.get(&(segments[0].clone(), segments[1].clone())) {
-                output.push((types.clone(), segments[2..].to_vec()));
-            }
-        }
-        if let Some(types) = attributes.get(&segments[0]) {
-            output.push((types.clone(), segments[1..].to_vec()));
-        }
-    }
-    Ok(FormRead {
-        paths: output,
-        references,
-    })
+            Ok(FormRead {
+                paths: output,
+                references,
+            })
+        },
+    )
 }
 fn path_segments(value: &str) -> Option<Vec<String>> {
     let segments: Vec<_> = value.split('.').collect();

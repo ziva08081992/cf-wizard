@@ -1,4 +1,5 @@
 //! Use-case ports. Desktop composition supplies concrete services.
+pub mod profile;
 #[cfg(test)]
 mod tests;
 use cf_domain::{Catalog, Error, Facts, ObjectKey, Plan, Result};
@@ -27,8 +28,16 @@ impl Cancellation {
 /// Maximum number of owners whose complete Git inventories may be speculative.
 pub const INVENTORY_WINDOW_LIMIT: usize = 4;
 pub trait MetadataSource: Send + Sync {
+    /// Optional, monotonic diagnostic counters. No source I/O is performed.
+    fn profile_counters(&self) -> Option<profile::SourceCounters> {
+        None
+    }
     fn manifest(&self) -> Option<&cf_domain::GitInputs> {
         None
+    }
+    /// Explicit Update Index hook only. Default performs no I/O beyond cancellation.
+    fn prepare_index_cache(&self, cancel: &Cancellation) -> Result<()> {
+        cancel.check()
     }
     fn materialized_root(&self) -> Option<&std::path::Path> {
         None
@@ -63,6 +72,15 @@ pub struct SourceEntry {
     pub name: String,
     pub directory: bool,
 }
+/// Immutable, self-contained replay of the checked facts from one specific lookup.
+pub trait FrozenSourceFacts: Send + Sync {
+    fn decode(&self) -> Result<cf_domain::source_facts::SourceFacts>;
+    fn encoded_len(&self) -> usize;
+}
+pub struct LoadedSourceFacts {
+    pub facts: cf_domain::source_facts::SourceFacts,
+    pub replay: Option<Arc<dyn FrozenSourceFacts>>,
+}
 pub trait FactStore: Send {
     /// Namespace-sensitive registrar facts are distinct from V1 lexer payloads.
     fn source_registrar_snapshot<'a>(
@@ -78,6 +96,19 @@ pub trait FactStore: Send {
         _content_hash: Option<&[u8]>,
     ) -> Result<Option<cf_domain::source_facts::SourceFacts>> {
         Ok(None)
+    }
+    /// Existing stores supply their original typed facts without encoding or re-querying.
+    fn source_facts_with_replay(
+        &self,
+        object: &str,
+        content_hash: Option<&[u8]>,
+    ) -> Result<Option<LoadedSourceFacts>> {
+        Ok(self
+            .source_facts(object, content_hash)?
+            .map(|facts| LoadedSourceFacts {
+                facts,
+                replay: None,
+            }))
     }
     fn lookup(&self, object: &str, content_hash: Option<&[u8]>) -> Result<Option<Facts>>;
     fn registrar_snapshot<'a>(
@@ -317,3 +348,5 @@ pub fn build_package(
     );
     Ok(package)
 }
+
+pub mod memory_trace;
