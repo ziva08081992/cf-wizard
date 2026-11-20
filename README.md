@@ -50,7 +50,7 @@
 | --- | --- |
 | Пользователь | [Пошаговое руководство](docs/user-guide.md), [Word со скриншотами](docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx?raw=1) |
 | Разработчик | [Сборка и проверки](BUILD.md), [Rust workspace](tools/cf-wizard-rust/README.md) |
-| Ревьюер | [Проверки и ограничения 0.8.7](docs/reports/cf-wizard-0.8.7-acceptance.md), [профиль прикладного ядра](docs/architecture/owned-source-profile.md), [методика измерений](docs/architecture/package-preparation-benchmark-0.8.7.md) |
+| Ревьюер | [Проверки и ограничения 0.8.9](docs/releases/v0.8.9.md#проверки-и-ограничения), [профиль прикладного ядра](docs/architecture/owned-source-profile.md), [методика измерений](docs/architecture/package-preparation-benchmark-0.8.7.md) |
 
 Рабочая версия находится в `tools/cf-wizard-rust`: слои `domain`, `application`, `infrastructure`, `desktop`. Файлы в `tools/1c-delivery` относятся к прежней Python-версии.
 
