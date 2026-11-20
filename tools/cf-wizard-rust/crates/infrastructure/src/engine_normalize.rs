@@ -1,6 +1,7 @@
 //! Structural policy adds explicit requirements before byte-preserving projection.
 use super::*;
 use crate::kinds::{REQUIRED_CHILDREN, REQUIRED_LISTS};
+use cf_application::profile;
 
 impl Session<'_> {
     fn choose(
@@ -37,174 +38,200 @@ impl Session<'_> {
         present: &BTreeSet<String>,
         allow_choice: bool,
     ) -> Result<bool> {
-        #[cfg(test)]
-        {
-            self.projection_visits += 1;
-        }
-        self.source_address = descriptor(key).expect("key");
-        let source = self.document(key)?;
-        let view = &source.view;
-        let xml = &view.xml;
-        let root = source.object;
-        let kind = key.split('.').next().unwrap_or_default();
-        let spec = self.states[key].spec.clone();
-        let children = view
-            .child(root, "ChildObjects")
-            .map_or(&[][..], |n| xml.elements[n].children.as_slice());
-        let kept = |n: usize| {
-            let e = &xml.elements[n];
-            let name = source.name(n).to_owned();
-            view.metadata(n, &e.local)
-                && (spec.members.contains(&(e.local.clone(), name.clone()))
-                    || spec.members.contains(&("*".into(), name)))
-        };
-        if spec.by_value {
-            for (ordinal, &n) in children.iter().enumerate() {
-                if view.metadata(n, "Dimension")
-                    && view
-                        .child(n, "Properties")
-                        .and_then(|p| view.child(p, "Master"))
-                        .is_some_and(|m| xml.text(m).is_ok_and(|v| v == "true"))
-                    && !kept(n)
-                {
-                    self.choose(
-                        "master_dimension",
+        profile::measure("engine.normalize", "engine.closure", 0, Some(key), || {
+            #[cfg(test)]
+            {
+                self.projection_visits += 1;
+            }
+            self.source_address = descriptor(key).expect("key");
+            let source = self.document(key)?;
+            let view = &source.view;
+            let xml = &view.xml;
+            let root = source.object;
+            let kind = key.split('.').next().unwrap_or_default();
+            let spec = self.states[key].spec.clone();
+            let children = view
+                .child(root, "ChildObjects")
+                .map_or(&[][..], |n| xml.elements[n].children.as_slice());
+            let kept = |n: usize| {
+                let e = &xml.elements[n];
+                let name = source.name(n).to_owned();
+                view.metadata(n, &e.local)
+                    && (spec.members.contains(&(e.local.clone(), name.clone()))
+                        || spec.members.contains(&("*".into(), name)))
+            };
+            if spec.by_value {
+                for (ordinal, &n) in children.iter().enumerate() {
+                    if view.metadata(n, "Dimension")
+                        && view
+                            .child(n, "Properties")
+                            .and_then(|p| view.child(p, "Master"))
+                            .is_some_and(|m| xml.text(m).is_ok_and(|v| v == "true"))
+                        && !kept(n)
+                    {
+                        self.choose(
+                            "master_dimension",
+                            key,
+                            "Dimension",
+                            source.name(n),
+                            ordinal,
+                        )?;
+                        return Ok(true);
+                    }
+                }
+            }
+            if allow_choice
+                && let Some(&(_, tags)) = REQUIRED_CHILDREN.iter().find(|&&(k, _)| k == kind)
+            {
+                let satisfied = children
+                    .iter()
+                    .any(|&n| tags.contains(&xml.elements[n].local.as_str()) && kept(n));
+                if !satisfied {
+                    let candidate = tags.iter().find_map(|tag| {
+                        children
+                            .iter()
+                            .enumerate()
+                            .find(|&(_, n)| view.metadata(*n, tag))
+                    });
+                    if let Some((ordinal, &n)) = candidate {
+                        self.choose(
+                            "minimum_field",
+                            key,
+                            &xml.elements[n].local,
+                            source.name(n),
+                            ordinal,
+                        )?;
+                        return Ok(true);
+                    }
+                    self.diagnostic(
+                        DiagnosticKind::MissingCandidate,
                         key,
-                        "Dimension",
-                        source.name(n),
-                        ordinal,
-                    )?;
-                    return Ok(true);
+                        &format!("{key}/minimum_field"),
+                    );
                 }
             }
-        }
-        if allow_choice
-            && let Some(&(_, tags)) = REQUIRED_CHILDREN.iter().find(|&&(k, _)| k == kind)
-        {
-            let satisfied = children
-                .iter()
-                .any(|&n| tags.contains(&xml.elements[n].local.as_str()) && kept(n));
-            if !satisfied {
-                let candidate = tags.iter().find_map(|tag| {
-                    children
-                        .iter()
-                        .enumerate()
-                        .find(|&(_, n)| view.metadata(*n, tag))
-                });
-                if let Some((ordinal, &n)) = candidate {
-                    self.choose(
-                        "minimum_field",
-                        key,
-                        &xml.elements[n].local,
-                        source.name(n),
-                        ordinal,
-                    )?;
-                    return Ok(true);
-                }
-                self.diagnostic(
-                    DiagnosticKind::MissingCandidate,
-                    key,
-                    &format!("{key}/minimum_field"),
-                );
-            }
-        }
-        let Some(props) = view.child(root, "Properties") else {
-            return Ok(false);
-        };
-        if self.states[key].required {
-            if spec.predefined {
-                let rel = format!(
-                    "{}/Ext/Predefined.xml",
-                    descriptor(key).expect("key").trim_end_matches(".xml")
-                );
-                if !self.source.exists(&rel, self.cancel)? {
-                    self.diagnostic(DiagnosticKind::MissingFile, key, &rel);
-                }
-            }
-            for &n in children {
-                let tag = xml.elements[n].local.as_str();
-                if matches!(tag, "Form" | "Template") && kept(n) {
+            let Some(props) = view.child(root, "Properties") else {
+                return Ok(false);
+            };
+            if self.states[key].required {
+                if spec.predefined {
                     let rel = format!(
-                        "{}/{s}/{}.xml",
-                        descriptor(key).expect("key").trim_end_matches(".xml"),
-                        source.name(n),
-                        s = if tag == "Form" { "Forms" } else { "Templates" }
+                        "{}/Ext/Predefined.xml",
+                        descriptor(key).expect("key").trim_end_matches(".xml")
                     );
                     if !self.source.exists(&rel, self.cancel)? {
                         self.diagnostic(DiagnosticKind::MissingFile, key, &rel);
                     }
                 }
-            }
-        }
-        for &p in &xml.elements[props].children {
-            let node = &xml.elements[p];
-            if !view.metadata(p, &node.local) {
-                continue;
-            }
-            if kind == "Document" && node.local == "RegisterRecords" {
-                self.states
-                    .get_mut(key)
-                    .expect("state")
-                    .spec
-                    .property_items
-                    .entry(node.local.clone())
-                    .or_default();
-                continue;
-            }
-            let required = spec.based_on && node.local == "BasedOn"
-                || REQUIRED_LISTS
-                    .iter()
-                    .any(|&(k, props)| k == kind && props.contains(&node.local.as_str()));
-            if node.children.is_empty() {
-                if required && allow_choice {
-                    self.diagnostic(
-                        DiagnosticKind::MissingCandidate,
-                        key,
-                        &format!("{key}/{}", node.local),
-                    );
+                for &n in children {
+                    let tag = xml.elements[n].local.as_str();
+                    if matches!(tag, "Form" | "Template") && kept(n) {
+                        let rel = format!(
+                            "{}/{s}/{}.xml",
+                            descriptor(key).expect("key").trim_end_matches(".xml"),
+                            source.name(n),
+                            s = if tag == "Form" { "Forms" } else { "Templates" }
+                        );
+                        if !self.source.exists(&rel, self.cancel)? {
+                            self.diagnostic(DiagnosticKind::MissingFile, key, &rel);
+                        }
+                    }
                 }
-                continue;
             }
-            if !node.children.iter().all(|&n| {
-                view.names[n].local == "Item"
-                    && matches!(view.names[n].uri.as_str(), crate::source_xml::READABLE | "")
-            }) {
-                continue;
-            }
-            let foreign = source.targets(p).iter().any(|target| target != key);
-            if !foreign && !required {
-                continue;
-            }
-            let old = spec
-                .property_items
-                .get(&node.local)
-                .cloned()
-                .unwrap_or_default();
-            for (ordinal, &n) in node.children.iter().enumerate() {
-                self.requirements.conditional_item(
-                    key,
-                    &format!("$property:{}|{ordinal}", node.local),
-                    source.targets(n),
-                )?;
-            }
-            let eligible: BTreeSet<_> = node
-                .children
-                .iter()
-                .enumerate()
-                .filter(|&(_, n)| {
-                    source
-                        .targets(*n)
+            for &p in &xml.elements[props].children {
+                let node = &xml.elements[p];
+                if !view.metadata(p, &node.local) {
+                    continue;
+                }
+                if kind == "Document" && node.local == "RegisterRecords" {
+                    self.states
+                        .get_mut(key)
+                        .expect("state")
+                        .spec
+                        .property_items
+                        .entry(node.local.clone())
+                        .or_default();
+                    continue;
+                }
+                let required = spec.based_on && node.local == "BasedOn"
+                    || REQUIRED_LISTS
                         .iter()
-                        .all(|target| present.contains(target) || target == key)
-                })
-                .map(|(i, _)| i)
-                .collect();
-            let mut wanted = old.clone();
-            wanted.extend(eligible);
-            if allow_choice && required && wanted.is_empty() {
-                wanted.insert(0);
-            }
-            if !allow_choice {
+                        .any(|&(k, props)| k == kind && props.contains(&node.local.as_str()));
+                if node.children.is_empty() {
+                    if required && allow_choice {
+                        self.diagnostic(
+                            DiagnosticKind::MissingCandidate,
+                            key,
+                            &format!("{key}/{}", node.local),
+                        );
+                    }
+                    continue;
+                }
+                if !node.children.iter().all(|&n| {
+                    view.names[n].local == "Item"
+                        && matches!(view.names[n].uri.as_str(), crate::source_xml::READABLE | "")
+                }) {
+                    continue;
+                }
+                let foreign = source.targets(p).iter().any(|target| target != key);
+                if !foreign && !required {
+                    continue;
+                }
+                let old = spec
+                    .property_items
+                    .get(&node.local)
+                    .cloned()
+                    .unwrap_or_default();
+                for (ordinal, &n) in node.children.iter().enumerate() {
+                    self.requirements.conditional_item(
+                        key,
+                        &format!("$property:{}|{ordinal}", node.local),
+                        source.targets(n),
+                    )?;
+                }
+                let eligible: BTreeSet<_> = node
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, n)| {
+                        source
+                            .targets(*n)
+                            .iter()
+                            .all(|target| present.contains(target) || target == key)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut wanted = old.clone();
+                wanted.extend(eligible);
+                if allow_choice && required && wanted.is_empty() {
+                    wanted.insert(0);
+                }
+                if !allow_choice {
+                    self.states
+                        .get_mut(key)
+                        .expect("state")
+                        .spec
+                        .property_items
+                        .entry(node.local.clone())
+                        .or_default();
+                    continue;
+                }
+                for ordinal in wanted.difference(&old) {
+                    self.choose(
+                        if required {
+                            "required_list"
+                        } else {
+                            "retained_list"
+                        },
+                        key,
+                        &format!("$property:{}", node.local),
+                        &ordinal.to_string(),
+                        *ordinal,
+                    )?;
+                }
+                if wanted != old {
+                    return Ok(true);
+                }
                 self.states
                     .get_mut(key)
                     .expect("state")
@@ -212,33 +239,9 @@ impl Session<'_> {
                     .property_items
                     .entry(node.local.clone())
                     .or_default();
-                continue;
             }
-            for ordinal in wanted.difference(&old) {
-                self.choose(
-                    if required {
-                        "required_list"
-                    } else {
-                        "retained_list"
-                    },
-                    key,
-                    &format!("$property:{}", node.local),
-                    &ordinal.to_string(),
-                    *ordinal,
-                )?;
-            }
-            if wanted != old {
-                return Ok(true);
-            }
-            self.states
-                .get_mut(key)
-                .expect("state")
-                .spec
-                .property_items
-                .entry(node.local.clone())
-                .or_default();
-        }
-        Ok(false)
+            Ok(false)
+        })
     }
     pub(super) fn choose_structural(&mut self) -> Result<bool> {
         let present = self.take_present();

@@ -2,6 +2,7 @@
 use crate::{canonical::key, source::relative_path};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cf_application::Cancellation;
+use cf_application::profile;
 use cf_domain::{Error, Provider, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -13,6 +14,9 @@ use std::{
     time::Duration,
 };
 use zeroize::Zeroizing;
+#[cfg(test)]
+#[path = "git_cold_inventory_perf.rs"]
+pub(crate) mod cold_inventory_perf;
 #[cfg(test)]
 #[path = "git_tests.rs"]
 mod tests;
@@ -165,35 +169,43 @@ pub fn oid(value: &str, github: bool) -> Result<String> {
     }
     Ok(value.into())
 }
+pub(super) fn file_read_limit(size: u64) -> Result<usize> {
+    usize::try_from(size)
+        .ok()
+        .and_then(|size| size.checked_add(1))
+        .ok_or_else(|| invalid("Размер файла Git превышает допустимый предел чтения"))
+}
 pub fn verify_blob(data: &[u8], id: &str, size: u64) -> Result<()> {
-    if data.len() as u64 != size {
-        return Err(invalid("Размер файла Git не совпал с описью"));
-    }
-    let prefix = format!("blob {}\0", data.len());
-    let digest = match id.len() {
-        40 => {
-            let mut h = sha1::Sha1::new();
-            h.update(prefix);
-            h.update(data);
-            hex::encode(h.finalize())
+    profile::measure("hash.git_oid", "verification", data.len(), None, || {
+        if data.len() as u64 != size {
+            return Err(invalid("Размер файла Git не совпал с описью"));
         }
-        64 => {
-            let mut h = sha2::Sha256::new();
-            h.update(prefix);
-            h.update(data);
-            hex::encode(h.finalize())
+        let prefix = format!("blob {}\0", data.len());
+        let digest = match id.len() {
+            40 => {
+                let mut h = sha1::Sha1::new();
+                h.update(prefix);
+                h.update(data);
+                hex::encode(h.finalize())
+            }
+            64 => {
+                let mut h = sha2::Sha256::new();
+                h.update(prefix);
+                h.update(data);
+                hex::encode(h.finalize())
+            }
+            _ => return Err(malformed()),
+        };
+        if digest != id {
+            return Err(invalid("Контрольная сумма файла Git не совпала с описью"));
         }
-        _ => return Err(malformed()),
-    };
-    if digest != id {
-        return Err(invalid("Контрольная сумма файла Git не совпала с описью"));
-    }
-    if data.starts_with(b"version https://git-lfs.github.com/spec/v1") {
-        return Err(invalid(
-            "Файл находится в Git LFS. LFS в пилоте не поддерживается",
-        ));
-    }
-    Ok(())
+        if data.starts_with(b"version https://git-lfs.github.com/spec/v1") {
+            return Err(invalid(
+                "Файл находится в Git LFS. LFS в пилоте не поддерживается",
+            ));
+        }
+        Ok(())
+    })
 }
 fn quote(value: &str) -> String {
     value
@@ -206,6 +218,42 @@ fn quote(value: &str) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
+#[derive(Debug)]
+pub enum HttpFailure {
+    Status(u16),
+    ResponseTooLarge,
+    Fatal(Error),
+}
+
+impl From<Error> for HttpFailure {
+    fn from(error: Error) -> Self {
+        Self::Fatal(error)
+    }
+}
+
+impl HttpFailure {
+    pub(super) fn into_domain_error(self) -> Error {
+        match self {
+            Self::Status(status) => status_error(status),
+            Self::ResponseTooLarge => invalid("Ответ Git API превышает допустимый размер"),
+            Self::Fatal(error) => error,
+        }
+    }
+}
+
+fn status_error(status: u16) -> Error {
+    invalid(format!(
+        "Git API: HTTP {status}. {}",
+        match status {
+            401 => "Проверьте токен.",
+            403 | 429 => "Проверьте права и лимит API.",
+            404 => "Проверьте репозиторий и права чтения.",
+            300..=399 => "Перенаправления запрещены; укажите конечный HTTPS-адрес.",
+            _ => "Запрос остановлен.",
+        }
+    ))
+}
+
 pub trait Http: Send + Sync {
     fn bytes(
         &self,
@@ -216,6 +264,19 @@ pub trait Http: Send + Sync {
         raw: bool,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>>;
+    fn bytes_typed(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> std::result::Result<Vec<u8>, HttpFailure> {
+        self.bytes(path, query, body, limit, raw, cancel)
+            .map_err(HttpFailure::Fatal)
+    }
+
     fn json(
         &self,
         path: &str,
@@ -273,77 +334,86 @@ impl Http for Https {
         raw: bool,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>> {
-        cancel.check()?;
-        let address = if path == "/graphql" && self.github {
-            "https://api.github.com/graphql".into()
-        } else {
-            format!("{}/{}", self.base, path)
-        };
-        let url = url::Url::parse(&address).map_err(|_| malformed())?;
-        if url.scheme() != self.origin.scheme()
-            || url.host_str() != self.origin.host_str()
-            || url.port_or_known_default() != self.origin.port_or_known_default()
-        {
-            return Err(invalid("Запрещена передача токена на другой сервер"));
-        }
-        let mut request = if body.is_some() {
-            self.client.post(url)
-        } else {
-            self.client.get(url)
-        };
-        let authorization = reqwest::header::HeaderValue::from_str(&format!(
-            "{} {}",
-            if self.github { "Bearer" } else { "token" },
-            self.token.as_str()
-        ))
-        .map_err(|_| invalid("Недопустимый токен"))?;
-        request = request
-            .query(query)
-            .header(reqwest::header::AUTHORIZATION, authorization);
-        if self.github {
-            request = request.header("X-GitHub-Api-Version", "2026-03-10").header(
-                "Accept",
-                if raw {
-                    "application/vnd.github.raw+json"
-                } else {
-                    "application/vnd.github+json"
-                },
-            );
-        }
-        if let Some(value) = body {
-            request = request.json(&value);
-        }
-        let mut response = request
-            .send()
-            .map_err(|_| invalid("Ошибка HTTPS: проверьте адрес, сеть и сертификат сервера"))?;
-        cancel.check()?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            return Err(invalid(format!(
-                "Git API: HTTP {status}. {}",
-                match status {
-                    401 => "Проверьте токен.",
-                    403 | 429 => "Проверьте права и лимит API.",
-                    404 => "Проверьте репозиторий и права чтения.",
-                    300..=399 => "Перенаправления запрещены; укажите конечный HTTPS-адрес.",
-                    _ => "Запрос остановлен.",
-                }
-            )));
-        }
-        if response.content_length().is_some_and(|n| n > limit as u64) {
-            return Err(invalid("Ответ Git API превышает допустимый размер"));
-        }
-        let mut data = vec![];
-        response
-            .by_ref()
-            .take(limit as u64 + 1)
-            .read_to_end(&mut data)
-            .map_err(|_| invalid("Ошибка чтения Git API"))?;
-        cancel.check()?;
-        if data.len() > limit {
-            return Err(invalid("Ответ Git API превышает допустимый размер"));
-        }
-        Ok(data)
+        self.bytes_typed(path, query, body, limit, raw, cancel)
+            .map_err(HttpFailure::into_domain_error)
+    }
+
+    fn bytes_typed(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> std::result::Result<Vec<u8>, HttpFailure> {
+        profile::measured_bytes(None, "http.response_body", "provider", None, || {
+            cancel.check()?;
+            let read_limit = u64::try_from(limit)
+                .ok()
+                .and_then(|limit| limit.checked_add(1))
+                .ok_or_else(|| invalid("Недопустимый предел размера ответа Git API"))?;
+            let address = if path == "/graphql" && self.github {
+                "https://api.github.com/graphql".into()
+            } else {
+                format!("{}/{}", self.base, path)
+            };
+            let url = url::Url::parse(&address).map_err(|_| malformed())?;
+            if url.scheme() != self.origin.scheme()
+                || url.host_str() != self.origin.host_str()
+                || url.port_or_known_default() != self.origin.port_or_known_default()
+            {
+                return Err(invalid("Запрещена передача токена на другой сервер").into());
+            }
+            let mut request = if body.is_some() {
+                self.client.post(url)
+            } else {
+                self.client.get(url)
+            };
+            let authorization = reqwest::header::HeaderValue::from_str(&format!(
+                "{} {}",
+                if self.github { "Bearer" } else { "token" },
+                self.token.as_str()
+            ))
+            .map_err(|_| invalid("Недопустимый токен"))?;
+            request = request
+                .query(query)
+                .header(reqwest::header::AUTHORIZATION, authorization);
+            if self.github {
+                request = request.header("X-GitHub-Api-Version", "2026-03-10").header(
+                    "Accept",
+                    if raw {
+                        "application/vnd.github.raw+json"
+                    } else {
+                        "application/vnd.github+json"
+                    },
+                );
+            }
+            if let Some(value) = body {
+                request = request.json(&value);
+            }
+            let mut response = request
+                .send()
+                .map_err(|_| invalid("Ошибка HTTPS: проверьте адрес, сеть и сертификат сервера"))?;
+            cancel.check()?;
+            if !response.status().is_success() {
+                return Err(HttpFailure::Status(response.status().as_u16()));
+            }
+            if response.content_length().is_some_and(|n| n > limit as u64) {
+                return Err(HttpFailure::ResponseTooLarge);
+            }
+            let mut data = vec![];
+            response
+                .by_ref()
+                .take(read_limit)
+                .read_to_end(&mut data)
+                .map_err(|_| invalid("Ошибка чтения Git API"))?;
+            cancel.check()?;
+            if data.len() > limit {
+                return Err(HttpFailure::ResponseTooLarge);
+            }
+            Ok(data)
+        })
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -360,6 +430,51 @@ pub struct Entry {
     pub kind: EntryKind,
     pub mode: String,
 }
+
+/// The provider collects rows and the source separately verifies their tree
+/// structure. Unavailable recursive proofs permit a direct tree walk.
+#[derive(Debug)]
+pub enum RecursiveListing<T> {
+    Complete(T),
+    Unsupported,
+    ProofIncomplete(RecursiveFallback),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecursiveFallback {
+    InvalidResponse,
+    InconsistentPages,
+    PageLimit,
+    RowLimit,
+    BodyLimit,
+    InvalidPath,
+    PathLimit,
+    DepthLimit,
+    InvalidTree,
+}
+
+impl RecursiveFallback {
+    pub fn metric(self) -> &'static str {
+        match self {
+            Self::InvalidResponse => "provider.tree_recursive_fallback_response",
+            Self::InconsistentPages => "provider.tree_recursive_fallback_pages",
+            Self::PageLimit => "provider.tree_recursive_fallback_page_limit",
+            Self::RowLimit => "provider.tree_recursive_fallback_row_limit",
+            Self::BodyLimit => "provider.tree_recursive_fallback_body_limit",
+            Self::InvalidPath => "provider.tree_recursive_fallback_path",
+            Self::PathLimit => "provider.tree_recursive_fallback_path_limit",
+            Self::DepthLimit => "provider.tree_recursive_fallback_depth_limit",
+            Self::InvalidTree => "provider.tree_recursive_fallback_proof",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RecursiveRow {
+    pub path: String,
+    pub entry: Entry,
+}
+
 #[derive(Clone, Debug)]
 pub struct Commit {
     pub oid: String,
@@ -371,6 +486,14 @@ pub trait GitProvider: Send + Sync {
     fn head(&self, branch: &str, cancel: &Cancellation) -> Result<String>;
     fn root(&self, revision: &str, cancel: &Cancellation) -> Result<String>;
     fn tree(&self, id: &str, cancel: &Cancellation) -> Result<Vec<Entry>>;
+    fn recursive_tree(
+        &self,
+        _id: &str,
+        cancel: &Cancellation,
+    ) -> Result<RecursiveListing<Vec<RecursiveRow>>> {
+        cancel.check()?;
+        Ok(RecursiveListing::Unsupported)
+    }
     fn file(
         &self,
         revision: &str,
@@ -633,13 +756,20 @@ impl GitProvider for Gitea {
         }
         Err(malformed())
     }
+    fn recursive_tree(
+        &self,
+        id: &str,
+        cancel: &Cancellation,
+    ) -> Result<RecursiveListing<Vec<RecursiveRow>>> {
+        crate::git_recursive::gitea_listing(self.http.as_ref(), id, cancel)
+    }
     fn file(&self, revision: &str, path: &str, e: &Entry, c: &Cancellation) -> Result<Vec<u8>> {
         relative_path(path)?;
         let bytes = self.http.bytes(
             &format!("raw/{}", quote(path)),
             &[("ref".into(), oid(revision, false)?)],
             None,
-            e.size as usize + 1,
+            file_read_limit(e.size)?,
             true,
             c,
         )?;
@@ -816,7 +946,7 @@ impl GitProvider for Github {
             &format!("git/blobs/{}", oid(&e.oid, true)?),
             &[],
             None,
-            e.size as usize + 1,
+            file_read_limit(e.size)?,
             true,
             c,
         )?;

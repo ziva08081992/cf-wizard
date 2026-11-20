@@ -482,3 +482,15 @@ fn changed_repeated_read_aborts_preview_instead_of_replacing_its_digest() {
     }
     assert!(checked > 0, "oracle must exercise repeated reads");
 }
+
+#[test]
+fn profiled_complete_packages_match_the_independent_oracle() {
+    let context = cf_application::profile::Context::new("preview", true, None);
+    {
+        let _scope = context.enter();
+        complete_packages_match_python_with_and_without_the_saved_index();
+    }
+    let report = context.report("ok").unwrap();
+    assert!(report.metrics["engine.total"].totals.calls > 0);
+    assert_eq!(report.final_in_flight, 0);
+}

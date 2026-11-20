@@ -112,6 +112,894 @@ fn tree(id: u32, rows: Value) -> Value {
 fn entry(name: &str, n: u32, kind: &str, mode: &str) -> Value {
     json!({"path":name,"sha":id(n),"type":kind,"mode":mode,"size":1})
 }
+
+fn recursive_page(page: usize, count: usize, truncated: bool, rows: Value) -> Value {
+    json!({"sha":id(1),"page":page,"total_count":count,"truncated":truncated,"tree":rows})
+}
+
+fn recursive_get(page: usize, value: Value) -> Step {
+    exact(
+        get(&format!("git/trees/{}", id(1)), value),
+        &[
+            ("recursive", "true"),
+            ("page", &page.to_string()),
+            ("per_page", "1000"),
+        ],
+    )
+}
+
+#[test]
+fn gitea_recursive_collects_clamped_pages_through_the_legacy_http_adapter() {
+    let http = Mock::new(vec![
+        recursive_get(
+            1,
+            recursive_page(
+                1,
+                3,
+                true,
+                json!([
+                    entry("Sub/child.xml", 2, "blob", "100644"),
+                    entry("a.xml", 3, "blob", "100755"),
+                ]),
+            ),
+        ),
+        // The historical Gitea implementation set truncated even on the final chunk.
+        recursive_get(
+            2,
+            recursive_page(2, 3, true, json!([entry("Sub", 4, "tree", "040000"),])),
+        ),
+    ]);
+    let provider = gitea(http.clone());
+    let context = profile::Context::new("recursive-tree-test", true, None);
+    let result = {
+        let _scope = context.enter();
+        provider
+            .recursive_tree(&id(1), &Cancellation::default())
+            .unwrap()
+    };
+    let RecursiveListing::Complete(rows) = result else {
+        panic!("fully collected page sequence was rejected");
+    };
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].path, "Sub/child.xml");
+    assert_eq!(rows[0].entry.name, "child.xml");
+    assert_eq!(rows[2].entry.size, 0);
+    assert!(provider.trees.lock().unwrap().is_empty());
+    let report = context.report("ok").unwrap();
+    assert_eq!(
+        report.metrics["provider.tree_recursive_page"].totals.calls,
+        2
+    );
+    assert_eq!(
+        report.metrics["provider.tree_recursive_terminal_true_seen"]
+            .totals
+            .items,
+        1
+    );
+    http.done();
+}
+
+#[test]
+fn gitea_recursive_requires_explicit_empty_tree_and_stable_paging() {
+    let cancel = Cancellation::default();
+    for empty in [Value::Null, json!([])] {
+        let http = Mock::new(vec![recursive_get(1, recursive_page(1, 0, false, empty))]);
+        assert!(matches!(
+            gitea(http.clone()).recursive_tree(&id(1), &cancel).unwrap(),
+            RecursiveListing::Complete(rows) if rows.is_empty()
+        ));
+        http.done();
+    }
+
+    let mut missing_tree = recursive_page(1, 0, false, Value::Null);
+    missing_tree.as_object_mut().unwrap().remove("tree");
+    let mut wrong_sha = recursive_page(2, 2, false, json!([entry("b", 4, "blob", "100644")]));
+    wrong_sha["sha"] = json!(id(2));
+    let first = || {
+        recursive_get(
+            1,
+            recursive_page(1, 2, true, json!([entry("a", 3, "blob", "100644"),])),
+        )
+    };
+    for (steps, expected) in [
+        (
+            vec![recursive_get(1, missing_tree)],
+            RecursiveFallback::InvalidResponse,
+        ),
+        (
+            vec![recursive_get(1, recursive_page(1, 0, true, Value::Null))],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![recursive_get(
+                1,
+                recursive_page(1, 2, false, json!([entry("a", 3, "blob", "100644")])),
+            )],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![recursive_get(
+                1,
+                recursive_page(1, 0, false, json!([entry("a", 3, "blob", "100644")])),
+            )],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![
+                first(),
+                recursive_get(2, recursive_page(2, 2, false, json!([]))),
+            ],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![
+                first(),
+                recursive_get(2, recursive_page(2, 2, false, Value::Null)),
+            ],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![
+                first(),
+                recursive_get(
+                    2,
+                    recursive_page(2, 2, false, json!([entry("a", 3, "blob", "100644")])),
+                ),
+            ],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![
+                first(),
+                recursive_get(
+                    2,
+                    recursive_page(1, 2, false, json!([entry("b", 4, "blob", "100644")])),
+                ),
+            ],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![
+                first(),
+                recursive_get(
+                    2,
+                    recursive_page(2, 3, false, json!([entry("b", 4, "blob", "100644")])),
+                ),
+            ],
+            RecursiveFallback::InconsistentPages,
+        ),
+        (
+            vec![first(), recursive_get(2, wrong_sha)],
+            RecursiveFallback::InconsistentPages,
+        ),
+    ] {
+        let http = Mock::new(steps);
+        assert!(matches!(
+            gitea(http.clone()).recursive_tree(&id(1), &cancel).unwrap(),
+            RecursiveListing::ProofIncomplete(reason) if reason == expected
+        ));
+        http.done();
+    }
+}
+
+enum TypedReply {
+    Body(Vec<u8>),
+    Error(HttpFailure),
+    Cancel,
+}
+
+struct RecursiveMock {
+    total: usize,
+    replies: Mutex<VecDeque<TypedReply>>,
+}
+
+impl Http for RecursiveMock {
+    fn bytes(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>> {
+        self.bytes_typed(path, query, body, limit, raw, cancel)
+            .map_err(HttpFailure::into_domain_error)
+    }
+
+    fn bytes_typed(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> std::result::Result<Vec<u8>, HttpFailure> {
+        cancel.check()?;
+        assert_eq!(path, format!("git/trees/{}", id(1)));
+        assert!(body.is_none() && !raw);
+        assert_eq!(limit, 2 * 1024 * 1024);
+        let mut replies = self.replies.lock().unwrap();
+        let page = self.total - replies.len() + 1;
+        assert_eq!(
+            query
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect::<BTreeMap<_, _>>(),
+            BTreeMap::from([
+                ("recursive", "true"),
+                ("page", &page.to_string()),
+                ("per_page", "1000")
+            ])
+        );
+        match replies
+            .pop_front()
+            .expect("unexpected recursive retry or next page")
+        {
+            TypedReply::Body(bytes) => Ok(bytes),
+            TypedReply::Error(error) => Err(error),
+            TypedReply::Cancel => {
+                cancel.cancel();
+                Err(HttpFailure::ResponseTooLarge)
+            }
+        }
+    }
+}
+
+fn typed_recursive(replies: Vec<TypedReply>) -> Result<RecursiveListing<Vec<RecursiveRow>>> {
+    let http = Arc::new(RecursiveMock {
+        total: replies.len(),
+        replies: Mutex::new(replies.into()),
+    });
+    let provider = Gitea {
+        http: http.clone(),
+        trees: Mutex::new(BTreeMap::new()),
+    };
+    let result = provider.recursive_tree(&id(1), &Cancellation::default());
+    assert!(http.replies.lock().unwrap().is_empty());
+    assert!(provider.trees.lock().unwrap().is_empty());
+    result
+}
+
+#[test]
+fn gitea_recursive_bounds_stop_before_an_additional_request_and_accept_equality() {
+    let row = |index| entry(&format!("file{index:04}"), 12, "blob", "100644");
+    let page = |index, count, rows| {
+        serde_json::to_vec(&recursive_page(index, count, true, Value::Array(rows))).unwrap()
+    };
+    let max_pages: Vec<_> = (1..=4)
+        .map(|index| TypedReply::Body(page(index, 5, vec![row(index)])))
+        .collect();
+    assert!(matches!(
+        typed_recursive(max_pages).unwrap(),
+        RecursiveListing::ProofIncomplete(RecursiveFallback::PageLimit)
+    ));
+    assert!(matches!(
+        typed_recursive(vec![TypedReply::Body(page(1, 4001, vec![row(0)]))]).unwrap(),
+        RecursiveListing::ProofIncomplete(RecursiveFallback::RowLimit)
+    ));
+    for oversized in [
+        TypedReply::Error(HttpFailure::ResponseTooLarge),
+        TypedReply::Body(vec![b' '; 2 * 1024 * 1024 + 1]),
+    ] {
+        assert!(matches!(
+            typed_recursive(vec![oversized]).unwrap(),
+            RecursiveListing::ProofIncomplete(RecursiveFallback::BodyLimit)
+        ));
+    }
+    let first_oversized_path = page(1, 1, vec![entry(&"Ю".repeat(2_049), 12, "blob", "100644")]);
+    assert!(matches!(
+        typed_recursive(vec![TypedReply::Body(first_oversized_path)]).unwrap(),
+        RecursiveListing::ProofIncomplete(RecursiveFallback::PathLimit)
+    ));
+    let at_all_limits = (0..4)
+        .map(|index| {
+            let mut body = page(
+                index + 1,
+                4_000,
+                (index * 1_000..(index + 1) * 1_000).map(row).collect(),
+            );
+            body.resize(2 * 1024 * 1024, b' ');
+            TypedReply::Body(body)
+        })
+        .collect();
+    assert!(matches!(
+        typed_recursive(at_all_limits).unwrap(),
+        RecursiveListing::Complete(rows) if rows.len() == 4_000
+    ));
+}
+
+#[test]
+fn gitea_recursive_http_status_transport_and_cancellation_are_fatal() {
+    let first_page = || {
+        TypedReply::Body(
+            serde_json::to_vec(&recursive_page(
+                1,
+                2,
+                true,
+                json!([entry("a", 3, "blob", "100644")]),
+            ))
+            .unwrap(),
+        )
+    };
+    for status in [302, 400, 401, 403, 404, 429, 500, 501, 503] {
+        let result = typed_recursive(vec![
+            first_page(),
+            TypedReply::Error(HttpFailure::Status(status)),
+        ]);
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == status_error(status).to_string())
+        );
+    }
+    for message in ["transport", "timeout", "read"] {
+        let result = typed_recursive(vec![
+            first_page(),
+            TypedReply::Error(HttpFailure::Fatal(Error::External(message.into()))),
+        ]);
+        assert!(matches!(result, Err(Error::External(actual)) if actual == message));
+    }
+    assert!(matches!(
+        typed_recursive(vec![first_page(), TypedReply::Cancel]),
+        Err(Error::Cancelled)
+    ));
+    assert!(matches!(
+        github(Mock::new(Vec::new()))
+            .recursive_tree(&id(1), &Cancellation::default())
+            .unwrap(),
+        RecursiveListing::Unsupported
+    ));
+}
+
+fn object_tree(ordered_rows: &[(&str, &str, &str)]) -> String {
+    let mut bytes = Vec::new();
+    for (name, mode, oid) in ordered_rows {
+        bytes.extend_from_slice(mode.as_bytes());
+        bytes.push(b' ');
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(0);
+        bytes.extend(hex::decode(oid).unwrap());
+    }
+    let mut digest = sha1::Sha1::new();
+    digest.update(format!("tree {}\0", bytes.len()));
+    digest.update(bytes);
+    hex::encode(digest.finalize())
+}
+
+fn wire_entry(name: &str, oid: &str, kind: &str, mode: &str, size: u64) -> Value {
+    json!({"path":name,"sha":oid,"type":kind,"mode":mode,"size":size})
+}
+
+fn inventory_response(oid: &str, recursive: bool, count: usize, rows: Value) -> Step {
+    let step = exact(
+        get(
+            &format!("git/trees/{oid}"),
+            json!({
+                "sha":oid,"page":1,"total_count":count,"truncated":false,"tree":rows
+            }),
+        ),
+        &[("page", "1"), ("per_page", "1000")],
+    );
+    if !recursive {
+        return step;
+    }
+    exact(
+        step,
+        &[("page", "1"), ("per_page", "1000"), ("recursive", "true")],
+    )
+}
+
+fn raw_at(path: &str, revision: &str, bytes: &[u8]) -> Step {
+    let mut step = exact(
+        get(&format!("raw/{path}"), Value::Null),
+        &[("ref", revision)],
+    );
+    step.raw = Some(bytes.to_vec());
+    step
+}
+
+struct RecursiveInventory {
+    revision: String,
+    scope: String,
+    catalogs: String,
+    owner: String,
+    ext: String,
+    file: Entry,
+}
+
+impl RecursiveInventory {
+    const CONFIG: &[u8] = b"<MetaDataObject><Configuration uuid='00000000-0000-4000-8000-000000000001'><Properties><Name>Fixture</Name></Properties><ChildObjects><Catalog>Owner</Catalog></ChildObjects></Configuration></MetaDataObject>";
+    const DESCRIPTOR: &[u8] = b"descriptor";
+    const PAYLOAD: &[u8] = b"authoritative bytes";
+    const OWNER: &str = "Catalogs/Owner";
+    const FILE: &str = "Catalogs/Owner/Ext/Payload.bin";
+
+    fn new() -> Self {
+        let file = blob(Self::PAYLOAD);
+        let ext = object_tree(&[("Payload.bin", "100644", &file.oid)]);
+        let owner = object_tree(&[("Ext", "40000", &ext)]);
+        let catalogs = object_tree(&[
+            ("Alias", "40000", &owner),
+            ("Owner.xml", "100644", &blob(Self::DESCRIPTOR).oid),
+            ("Owner", "40000", &owner),
+        ]);
+        let scope = object_tree(&[
+            ("Catalogs", "40000", &catalogs),
+            ("Configuration.xml", "100644", &blob(Self::CONFIG).oid),
+        ]);
+        Self {
+            revision: id(9),
+            scope,
+            catalogs,
+            owner,
+            ext,
+            file,
+        }
+    }
+
+    fn bootstrap(&self, config_cold: bool) -> Vec<Step> {
+        let mut steps = vec![
+            get(
+                "git/refs/heads/main",
+                json!({
+                    "ref":"refs/heads/main","object":{"sha":self.revision}
+                }),
+            ),
+            inventory_response(
+                &self.revision,
+                false,
+                1,
+                json!([wire_entry("config", &self.scope, "tree", "040000", 0),]),
+            ),
+            inventory_response(
+                &self.scope,
+                false,
+                2,
+                json!([
+                    wire_entry("Catalogs", &self.catalogs, "tree", "040000", 0),
+                    wire_entry(
+                        "Configuration.xml",
+                        &blob(Self::CONFIG).oid,
+                        "blob",
+                        "100644",
+                        Self::CONFIG.len() as u64
+                    ),
+                ]),
+            ),
+        ];
+        if config_cold {
+            steps.push(raw_at(
+                "config/Configuration.xml",
+                &self.revision,
+                Self::CONFIG,
+            ));
+        }
+        steps.push(inventory_response(
+            &self.catalogs,
+            false,
+            3,
+            json!([
+                wire_entry("Alias", &self.owner, "tree", "040000", 0),
+                wire_entry("Owner", &self.owner, "tree", "040000", 0),
+                wire_entry(
+                    "Owner.xml",
+                    &blob(Self::DESCRIPTOR).oid,
+                    "blob",
+                    "100644",
+                    Self::DESCRIPTOR.len() as u64
+                ),
+            ]),
+        ));
+        steps
+    }
+
+    fn direct_owner(&self) -> Step {
+        inventory_response(
+            &self.owner,
+            false,
+            1,
+            json!([wire_entry("Ext", &self.ext, "tree", "040000", 0)]),
+        )
+    }
+
+    fn ext_response(&self, recursive: bool) -> Step {
+        inventory_response(
+            &self.ext,
+            recursive,
+            1,
+            json!([wire_entry(
+                "Payload.bin",
+                &self.file.oid,
+                "blob",
+                "100644",
+                self.file.size
+            )]),
+        )
+    }
+
+    fn open(cache: &std::path::Path, http: Arc<dyn Http>) -> crate::git_source::GitSource {
+        crate::git_source::GitSource::open(
+            &Connection {
+                server: "https://gitea.test".into(),
+                repository: "fixture/project".into(),
+                branch: "main".into(),
+                directory: "config".into(),
+                cache: cache.to_string_lossy().into_owned(),
+                ..Connection::default()
+            },
+            Arc::new(Gitea {
+                http,
+                trees: Mutex::new(BTreeMap::new()),
+            }),
+            &Cancellation::default(),
+        )
+        .unwrap()
+    }
+}
+
+#[test]
+fn gitea_recursive_inventory_refreshes_wrong_live_size_hint_and_reopens_without_inventory_http() {
+    use cf_application::MetadataSource;
+    let f = RecursiveInventory::new();
+    let cache = tempfile::tempdir().unwrap();
+    let mut steps = f.bootstrap(true);
+    let mut first_page = inventory_response(
+        &f.owner,
+        true,
+        2,
+        json!([wire_entry("Ext", &f.ext, "tree", "040000", 0)]),
+    );
+    first_page.result.as_mut().unwrap()["truncated"] = json!(true);
+    let mut second_page = inventory_response(
+        &f.owner,
+        true,
+        2,
+        json!([wire_entry(
+            "Ext/Payload.bin",
+            &f.file.oid,
+            "blob",
+            "100644",
+            u64::MAX
+        ),]),
+    );
+    second_page.result.as_mut().unwrap()["page"] = json!(2);
+    second_page = exact(
+        second_page,
+        &[("page", "2"), ("per_page", "1000"), ("recursive", "true")],
+    );
+    steps.extend([
+        first_page,
+        second_page,
+        f.ext_response(false),
+        raw_at(
+            "config/Catalogs/Owner/Ext/Payload.bin",
+            &f.revision,
+            RecursiveInventory::PAYLOAD,
+        ),
+    ]);
+    let http = Mock::new(steps);
+    let source = RecursiveInventory::open(cache.path(), http.clone());
+    let cancel = Cancellation::default();
+    let expected = vec![RecursiveInventory::FILE.to_owned()];
+    let paths = vec![RecursiveInventory::OWNER.to_owned()];
+    let context = profile::Context::new("recursive-paged-inventory", true, None);
+    let cold = {
+        let _scope = context.enter();
+        source
+            .inventory_window(&paths, &cancel)
+            .unwrap()
+            .unwrap()
+            .remove(0)
+            .unwrap()
+    };
+    assert_eq!(cold, expected);
+    let report = context.report("ok").unwrap();
+    assert_eq!(report.metrics["provider.tree"].totals.calls, 1);
+    assert_eq!(report.metrics["provider.tree_recursive"].totals.calls, 1);
+    assert_eq!(
+        report.metrics["provider.tree_recursive_page"].totals.calls,
+        2
+    );
+    assert_eq!(report.maximum_combined_in_flight, 1);
+    assert_eq!(report.final_in_flight, 0);
+    assert_eq!(
+        source.read(RecursiveInventory::FILE, &cancel).unwrap(),
+        RecursiveInventory::PAYLOAD
+    );
+    http.done();
+    drop(source);
+
+    let restart_http = Mock::new(f.bootstrap(false));
+    let restart = RecursiveInventory::open(cache.path(), restart_http.clone());
+    assert_eq!(
+        restart
+            .inventory_window(&paths, &cancel)
+            .unwrap()
+            .unwrap()
+            .remove(0)
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        restart.read(RecursiveInventory::FILE, &cancel).unwrap(),
+        RecursiveInventory::PAYLOAD
+    );
+    restart_http.done();
+}
+
+#[test]
+fn gitea_recursive_inventory_disables_protocol_rejections_but_keeps_other_oids_eligible_after_bounds()
+ {
+    use cf_application::MetadataSource;
+    let f = RecursiveInventory::new();
+    let paths = vec![RecursiveInventory::OWNER.to_owned()];
+    for bounded in [false, true] {
+        let cache = tempfile::tempdir().unwrap();
+        let mut steps = f.bootstrap(true);
+        if bounded {
+            steps.push(inventory_response(&f.owner, true, 4001, json!([])));
+        } else {
+            // The immediate child is valid, but the descendant was omitted.
+            steps.push(inventory_response(
+                &f.owner,
+                true,
+                1,
+                json!([wire_entry("Ext", &f.ext, "tree", "040000", 0)]),
+            ));
+        }
+        steps.extend([f.direct_owner(), f.ext_response(bounded)]);
+        let http = Mock::new(steps);
+        let source = RecursiveInventory::open(cache.path(), http.clone());
+        let result = source
+            .inventory_window(&paths, &Cancellation::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result[0].as_ref().unwrap(),
+            &[RecursiveInventory::FILE.to_owned()]
+        );
+        http.done();
+    }
+}
+
+#[test]
+fn gitea_recursive_inventory_propagates_transport_failure_without_direct_retry() {
+    use cf_application::MetadataSource;
+    let f = RecursiveInventory::new();
+    let cache = tempfile::tempdir().unwrap();
+    let mut steps = f.bootstrap(true);
+    let mut failed = inventory_response(&f.owner, true, 0, Value::Null);
+    failed.result = Err("network failure");
+    steps.push(failed);
+    let http = Mock::new(steps);
+    let source = RecursiveInventory::open(cache.path(), http.clone());
+    let result = source
+        .inventory_window(
+            &[RecursiveInventory::OWNER.into()],
+            &Cancellation::default(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(matches!(&result[0], Err(Error::Invalid(message)) if message == "network failure"));
+    http.done();
+}
+
+#[test]
+fn gitea_recursive_inventory_aliases_share_the_root_flight_and_resume_at_first_missing_child() {
+    use cf_application::MetadataSource;
+    let fixture = RecursiveInventory::new();
+    let cache = tempfile::tempdir().unwrap();
+    let mut steps = fixture.bootstrap(true);
+    steps.push(inventory_response(
+        &fixture.owner,
+        true,
+        2,
+        json!([
+            wire_entry("Ext", &fixture.ext, "tree", "040000", 0),
+            wire_entry(
+                "Ext/Payload.bin",
+                &fixture.file.oid,
+                "blob",
+                "100644",
+                fixture.file.size
+            ),
+        ]),
+    ));
+    let http = Mock::new(steps);
+    let first = RecursiveInventory::open(cache.path(), http.clone());
+    let paths = vec![RecursiveInventory::OWNER.into(), "Catalogs/Alias".into()];
+    let expected = [
+        vec![RecursiveInventory::FILE.to_owned()],
+        vec!["Catalogs/Alias/Ext/Payload.bin".to_owned()],
+    ];
+    let inventory = |source: &crate::git_source::GitSource| {
+        source
+            .inventory_window(&paths, &Cancellation::default())
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(inventory(&first), expected);
+    http.done();
+
+    let tree_cache =
+        crate::git_tree_cache::TreeCache::new(cache.path(), first.connection(), first.revision())
+            .unwrap();
+    drop(first);
+    let sqlite = rusqlite::Connection::open(tree_cache.sqlite_path_for_test()).unwrap();
+    assert_eq!(
+        sqlite
+            .execute("DELETE FROM trees WHERE oid = ?1", [&fixture.ext])
+            .unwrap(),
+        1
+    );
+    drop(sqlite);
+    let mut steps = fixture.bootstrap(false);
+    steps.push(fixture.ext_response(true));
+    let http = Mock::new(steps);
+    let restarted = RecursiveInventory::open(cache.path(), http.clone());
+    assert_eq!(inventory(&restarted), expected);
+    http.done();
+}
+
+struct ConcurrentRecursiveHttp {
+    bootstrap: Arc<Mock>,
+    responses: BTreeMap<String, Value>,
+    arrivals: Mutex<usize>,
+    all_arrived: std::sync::Condvar,
+    active: std::sync::atomic::AtomicUsize,
+    maximum: std::sync::atomic::AtomicUsize,
+}
+
+impl Http for ConcurrentRecursiveHttp {
+    fn bytes(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>> {
+        if !query
+            .iter()
+            .any(|(key, value)| key == "recursive" && value == "true")
+        {
+            return self.bootstrap.bytes(path, query, body, limit, raw, cancel);
+        }
+        use std::sync::atomic::Ordering::SeqCst;
+        cancel.check()?;
+        let response = self
+            .responses
+            .get(path)
+            .expect("unexpected recursive target");
+        let active = self.active.fetch_add(1, SeqCst) + 1;
+        self.maximum.fetch_max(active, SeqCst);
+        let mut arrived = self.arrivals.lock().unwrap();
+        *arrived += 1;
+        if *arrived == self.responses.len() {
+            self.all_arrived.notify_all();
+        }
+        let (arrived, _) = self
+            .all_arrived
+            .wait_timeout_while(arrived, Duration::from_secs(3), |arrived| {
+                *arrived < self.responses.len()
+            })
+            .unwrap();
+        self.active.fetch_sub(1, SeqCst);
+        assert_eq!(*arrived, self.responses.len());
+        serde_json::to_vec(response).map_err(crate::external)
+    }
+}
+
+#[test]
+fn gitea_recursive_inventory_profile_matches_four_overlapping_http_requests() {
+    use cf_application::MetadataSource;
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut fixture = RecursiveInventory::new();
+    let cache = tempfile::tempdir().unwrap();
+    let jobs: Vec<_> = (1..=4)
+        .map(|index| {
+            let file = id(index + 100);
+            (
+                format!("Job{index}"),
+                object_tree(&[("Data.bin", "100644", &file)]),
+                file,
+            )
+        })
+        .collect();
+    let owner = blob(RecursiveInventory::DESCRIPTOR);
+    let mut catalog_rows: Vec<_> = jobs
+        .iter()
+        .map(|(name, oid, _)| (name.as_str(), "40000", oid.as_str()))
+        .collect();
+    catalog_rows.push(("Owner.xml", "100644", &owner.oid));
+    fixture.catalogs = object_tree(&catalog_rows);
+    fixture.scope = object_tree(&[
+        ("Catalogs", "40000", &fixture.catalogs),
+        (
+            "Configuration.xml",
+            "100644",
+            &blob(RecursiveInventory::CONFIG).oid,
+        ),
+    ]);
+    let mut steps = fixture.bootstrap(true);
+    let mut rows: Vec<_> = jobs
+        .iter()
+        .map(|(name, oid, _)| wire_entry(name, oid, "tree", "040000", 0))
+        .collect();
+    rows.push(wire_entry(
+        "Owner.xml",
+        &owner.oid,
+        "blob",
+        "100644",
+        owner.size,
+    ));
+    *steps.last_mut().unwrap() =
+        inventory_response(&fixture.catalogs, false, rows.len(), Value::Array(rows));
+    let responses = jobs
+        .iter()
+        .map(|(_, oid, file)| {
+            (
+                format!("git/trees/{oid}"),
+                json!({"sha":oid,"page":1,"total_count":1,"truncated":false,
+            "tree":[wire_entry("Data.bin", file, "blob", "100644", 1)]}),
+            )
+        })
+        .collect();
+    let http = Arc::new(ConcurrentRecursiveHttp {
+        bootstrap: Mock::new(steps),
+        responses,
+        arrivals: Mutex::new(0),
+        all_arrived: std::sync::Condvar::new(),
+        active: Default::default(),
+        maximum: Default::default(),
+    });
+    let open = profile::Context::new("recursive-profile-bootstrap", true, None);
+    let mut source = {
+        let _scope = open.enter();
+        RecursiveInventory::open(cache.path(), http.clone())
+    };
+    source.set_test_source_counters(profile::SourceCounters::new(true));
+    let context = profile::Context::new(
+        "recursive-overlapping-inventory",
+        true,
+        source.profile_counters(),
+    );
+    let paths: Vec<_> = jobs
+        .iter()
+        .map(|(name, _, _)| format!("Catalogs/{name}"))
+        .collect();
+    {
+        let _scope = context.enter();
+        let files = source
+            .inventory_window(&paths, &Cancellation::default())
+            .unwrap()
+            .unwrap();
+        for (owner, rows) in paths.iter().zip(files) {
+            assert_eq!(rows.unwrap(), [format!("{owner}/Data.bin")]);
+        }
+    }
+    http.bootstrap.done();
+    let report = context.report("ok").unwrap();
+    assert_eq!(report.source_delta["provider.tree"].calls, 4);
+    assert_eq!(report.metrics["provider.tree"].totals.calls, 4);
+    assert_eq!(report.metrics["provider.tree_recursive"].totals.calls, 4);
+    assert_eq!(
+        report.metrics["provider.tree_recursive_page"].totals.calls,
+        4
+    );
+    assert_eq!(
+        report.maximum_combined_in_flight,
+        http.maximum.load(SeqCst) as u64
+    );
+    assert_eq!(report.maximum_combined_in_flight, 4);
+    assert_eq!(report.final_in_flight, 0);
+    assert_eq!(http.active.load(SeqCst), 0);
+}
+
 #[test]
 fn identities_reject_cross_origin_and_preserve_legacy() {
     assert_eq!(

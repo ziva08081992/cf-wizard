@@ -4,9 +4,12 @@ pub mod engine;
 #[cfg(test)]
 pub mod forms;
 pub mod git;
+mod git_recursive;
 pub mod git_source;
+mod git_tree_cache;
 mod identity;
 pub mod index;
+mod index_integrity;
 pub mod indexing;
 pub mod journal;
 pub mod kernel;
@@ -47,3 +50,5 @@ mod source_proof_tests;
 pub(crate) mod source_reader;
 pub(crate) mod source_schema;
 pub(crate) mod source_xml;
+
+mod sqlite_cache;

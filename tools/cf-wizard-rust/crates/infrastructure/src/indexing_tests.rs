@@ -397,3 +397,188 @@ fn cross_process_lock_and_forced_crash_preserve_the_published_index() {
         1
     );
 }
+
+fn make_legacy_v2(path: &Path) -> PathBuf {
+    let legacy = PathBuf::from(
+        path.to_string_lossy()
+            .replace("source-facts-v3", "source-facts-v2"),
+    );
+    fs::copy(path, &legacy).unwrap();
+    let db = Connection::open(&legacy).unwrap();
+    let values = {
+        let mut q = db
+            .prepare("SELECT name,content_hash,facts FROM objects")
+            .unwrap();
+        q.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    for (name, hash, data) in values {
+        let facts = facts_cache::decode_v3(&data, &name, &hash, &FactVersions::current()).unwrap();
+        db.execute(
+            "UPDATE objects SET facts=? WHERE name=?",
+            params![facts_cache::encode(&facts).unwrap(), name],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "UPDATE metadata SET value=? WHERE key='facts_contract'",
+        [facts_cache::CONTRACT],
+    )
+    .unwrap();
+    drop(db);
+    fs::remove_file(path).unwrap();
+    legacy
+}
+#[test]
+fn explicit_compact_migration_reuses_unchanged_pinned_xml_preserves_v2() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("index");
+    let root = temp.path().join("source");
+    let data = row("required-values");
+    let first = source(&data, &root, true);
+    let built = update(&first, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    let before_reader =
+        IndexReader::open(&built.path, Proof::Git(first.manifest().unwrap())).unwrap();
+    let names = first
+        .catalog()
+        .objects
+        .keys()
+        .map(|key| key.0.clone())
+        .collect::<Vec<_>>();
+    let before = names
+        .iter()
+        .map(|name| before_reader.source_facts(name, None).unwrap())
+        .collect::<Vec<_>>();
+    drop(before_reader);
+    let legacy = make_legacy_v2(&built.path);
+    let bytes = fs::read(&legacy).unwrap();
+    let restarted = source(&data, &root, true);
+    let status_before = status(&restarted, &folder).unwrap();
+    assert!(status_before.ready);
+    assert_eq!(status_before.path, Some(legacy.clone()));
+    let report = update(&restarted, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    assert!(report.migrated);
+    assert_eq!(report.xml_reads, 0);
+    assert!(restarted.reads.lock().unwrap().is_empty());
+    assert_eq!(fs::read(&legacy).unwrap(), bytes);
+    assert_ne!(report.path, legacy);
+    let db = Connection::open(&report.path).unwrap();
+    assert_eq!(
+        header(&db).unwrap()["facts_contract"],
+        facts_cache::CONTRACT_V3
+    );
+    drop(db);
+    let reader =
+        IndexReader::open(&report.path, Proof::Git(restarted.manifest().unwrap())).unwrap();
+    let after = names
+        .iter()
+        .map(|name| reader.source_facts(name, None).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(before, after);
+    drop(reader);
+    assert_eq!(
+        status(&restarted, &folder).unwrap().path,
+        Some(report.path.clone())
+    );
+    let next = update(&restarted, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    assert_eq!(next.xml_reads, 0);
+    assert!(!next.migrated);
+}
+#[test]
+fn corrupt_v2_payload_and_cancelled_migration_preserve_old_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("index");
+    let root = temp.path().join("source");
+    let data = row("required-values");
+    let input = source(&data, &root, true);
+    let built = update(&input, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    let legacy = make_legacy_v2(&built.path);
+    let db = Connection::open(&legacy).unwrap();
+    db.execute(
+        "UPDATE objects SET facts=x'00' WHERE name=(SELECT name FROM objects LIMIT 1)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let bytes = fs::read(&legacy).unwrap();
+    assert!(update(&input, &folder, &Cancellation::default(), &|_, _| {}).is_err());
+    assert!(!built.path.exists());
+    assert_eq!(fs::read(&legacy).unwrap(), bytes);
+    let c = Cancellation::default();
+    c.cancel();
+    assert!(matches!(
+        update(&input, &folder, &c, &|_, _| {}),
+        Err(Error::Cancelled)
+    ));
+    assert_eq!(fs::read(&legacy).unwrap(), bytes);
+}
+#[test]
+fn borrowed_blob_checks_column_types_before_hash_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("index");
+    let root = temp.path().join("source");
+    let input = source(&row("required-values"), &root, true);
+    let built = update(&input, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+    let name = input.catalog().objects.keys().next().unwrap().0.clone();
+    let db = Connection::open(&built.path).unwrap();
+    db.execute(
+        "UPDATE objects SET facts='wrong-type' WHERE name=?",
+        [&name],
+    )
+    .unwrap();
+    drop(db);
+    let reader = IndexReader::open(&built.path, Proof::Git(input.manifest().unwrap())).unwrap();
+    assert!(reader.source_facts(&name, Some(&[255])).is_err());
+}
+
+#[test]
+fn preview_open_rejects_new_incomplete_owned_snapshot_after_readiness() {
+    for via_wal in [true, false] {
+        for documents in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let folder = temp.path().join("index");
+            let root = temp.path().join("source");
+            let input = source(&row("register-resource-and-first-registrar"), &root, true);
+            let built = update(&input, &folder, &Cancellation::default(), &|_, _| {}).unwrap();
+            assert!(status(&input, &folder).unwrap().ready);
+            let alternate = temp.path().join("replacement.sqlite3");
+            let target = if via_wal {
+                built.path.clone()
+            } else {
+                fs::copy(&built.path, &alternate).unwrap();
+                alternate.clone()
+            };
+            let writer = Connection::open(&target).unwrap();
+            writer.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+            if via_wal {
+                writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+            }
+            let sql = if documents {
+                "DELETE FROM documents WHERE file=(SELECT file FROM documents LIMIT 1)"
+            } else {
+                "DELETE FROM objects WHERE name=(SELECT name FROM objects LIMIT 1)"
+            };
+            assert_eq!(writer.execute(sql, []).unwrap(), 1);
+            if via_wal {
+                assert!(
+                    IndexReader::open(&built.path, Proof::Git(input.manifest().unwrap())).is_err()
+                );
+                drop(writer);
+            } else {
+                drop(writer);
+                fs::rename(&alternate, &built.path).unwrap();
+                assert!(
+                    IndexReader::open(&built.path, Proof::Git(input.manifest().unwrap())).is_err()
+                );
+            }
+        }
+    }
+}

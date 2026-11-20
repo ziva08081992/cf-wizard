@@ -14,6 +14,71 @@ fn document(key: &str, xml: &str) -> SourceDocument {
     )
     .unwrap()
 }
+
+#[test]
+fn parent_first_addresses_preserve_namespace_paths_and_cached_evidence() {
+    let key = "Catalog.Owner";
+    let xml = format!(
+        "<MetaDataObject xmlns='{MD}' xmlns:x='urn:outer'><Catalog><Properties><Name>Owner</Name></Properties><ChildObjects><TabularSection><Properties><Name>Rows</Name></Properties><ChildObjects>{}</ChildObjects></TabularSection></ChildObjects></Catalog></MetaDataObject>",
+        "<Attribute><Properties><Name>Field</Name><x:Layer><x:Item/><x:Item/><x:Layer xmlns:x='urn:inner'><x:Item/><x:Item/></x:Layer></x:Layer></Properties></Attribute>".repeat(12)
+    );
+    let original = document(key, &xml);
+    for (id, current) in original.node_ids.iter().enumerate() {
+        let legacy = original
+            .view
+            .path(id)
+            .iter()
+            .map(|step| format!("{{{}}}{}[{}]", step.name.uri, step.name.local, step.ordinal))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_eq!(current, &format!("{key}/{legacy}"));
+    }
+    assert!(
+        original
+            .node_ids
+            .iter()
+            .any(|id| id.ends_with("{urn:inner}Item[1]"))
+    );
+    assert!(
+        original
+            .node_ids
+            .iter()
+            .any(|id| id.ends_with("Attribute[11]"))
+    );
+
+    let proof = SourceProof {
+        identity: "synthetic".into(),
+        snapshot: "immutable-two".into(),
+        inputs: BTreeMap::new(),
+    };
+    let cached =
+        |facts| SourceDocument::cached(key, "fixture.xml", xml.as_bytes(), proof.clone(), facts);
+    let restored = cached(original.facts.clone()).unwrap();
+    let extracted =
+        SourceDocument::descriptor(key, "fixture.xml", xml.as_bytes(), proof.clone()).unwrap();
+    assert_eq!(restored.node_ids, extracted.node_ids);
+    assert_eq!(restored.facts, extracted.facts);
+    assert_eq!(
+        restored.targets(restored.object),
+        extracted.targets(extracted.object)
+    );
+
+    let object_id = &original.node_ids[original.object];
+    for field in ["span", "tag", "parent"] {
+        let mut broken = original.facts.clone();
+        let object = broken.fragments.get_mut(object_id).unwrap();
+        match field {
+            "span" => object.origin.span = None,
+            "tag" => object.tag.local = "Wrong".into(),
+            "parent" => object.parent = None,
+            _ => unreachable!(),
+        }
+        assert!(
+            matches!(cached(broken), Err(Error::Invalid(reason)) if reason.contains("source spans"))
+        );
+    }
+}
+
 #[test]
 fn source_markup_hints_follow_retained_source_fragments() {
     let source = document(
