@@ -27,6 +27,15 @@ impl Cancellation {
 }
 /// Maximum number of owners whose complete Git inventories may be speculative.
 pub const INVENTORY_WINDOW_LIMIT: usize = 4;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrefetchProgress {
+    CheckingCache,
+    Downloading {
+        ready: usize,
+        total: usize,
+        downloaded: usize,
+    },
+}
 pub trait MetadataSource: Send + Sync {
     /// Optional, monotonic diagnostic counters. No source I/O is performed.
     fn profile_counters(&self) -> Option<profile::SourceCounters> {
@@ -47,6 +56,14 @@ pub trait MetadataSource: Send + Sync {
     fn read(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<u8>>;
     fn prefetch(&self, _paths: &[String], cancel: &Cancellation) -> Result<()> {
         cancel.check()
+    }
+    fn prefetch_with_progress(
+        &self,
+        paths: &[String],
+        cancel: &Cancellation,
+        _progress: &dyn Fn(PrefetchProgress),
+    ) -> Result<()> {
+        self.prefetch(paths, cancel)
     }
     fn files_below(&self, relative: &str, cancel: &Cancellation) -> Result<Vec<String>>;
     /// Optional pinned-Git optimization. Each ordered entry is the complete

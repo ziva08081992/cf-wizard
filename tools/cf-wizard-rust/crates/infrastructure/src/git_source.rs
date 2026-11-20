@@ -10,7 +10,7 @@ use crate::{
     source::{canonical_future, catalog, no_links, normal_path, relative_path},
 };
 use cf_application::profile;
-use cf_application::{Cancellation, MetadataSource, SourceEntry};
+use cf_application::{Cancellation, MetadataSource, PrefetchProgress, SourceEntry};
 use cf_domain::{Catalog, Error, Provider, Result};
 use serde::Serialize;
 #[cfg(test)]
@@ -1057,6 +1057,14 @@ impl MetadataSource for GitSource {
         self.files.read(path, c)
     }
     fn prefetch(&self, paths: &[String], c: &Cancellation) -> Result<()> {
+        self.prefetch_with_progress(paths, c, &|_| {})
+    }
+    fn prefetch_with_progress(
+        &self,
+        paths: &[String],
+        c: &Cancellation,
+        progress: &dyn Fn(PrefetchProgress),
+    ) -> Result<()> {
         profile::source_measure(
             Some(&self.files.counters),
             "source.prefetch",
@@ -1064,6 +1072,9 @@ impl MetadataSource for GitSource {
             0,
             None,
             || {
+                if !paths.is_empty() {
+                    progress(PrefetchProgress::CheckingCache);
+                }
                 let mut missing = vec![];
                 for path in paths {
                     c.check()?;
@@ -1081,6 +1092,18 @@ impl MetadataSource for GitSource {
                         }
                     }
                 }
+                let available = paths.len() - missing.len();
+                let mut downloaded = 0;
+                let report = |downloaded| {
+                    progress(PrefetchProgress::Downloading {
+                        ready: available + downloaded,
+                        total: paths.len(),
+                        downloaded,
+                    });
+                };
+                if !missing.is_empty() {
+                    report(downloaded);
+                }
                 for batch in missing.chunks(20) {
                     let names = batch
                         .iter()
@@ -1092,14 +1115,20 @@ impl MetadataSource for GitSource {
                         })
                         .collect::<Vec<_>>();
                     let mut data = self.files.client.files(self.revision(), &names, c)?;
-                    for (path, e) in batch {
-                        let full = format!("{}/{path}", self.files.connection.directory);
-                        let bytes = data
-                            .remove(&full)
-                            .ok_or_else(|| Error::Invalid("Неполная загрузка XML из Git".into()))?;
-                        c.check()?;
-                        self.files.put(path, e, &bytes, c)?;
-                    }
+                    let written = (|| -> Result<()> {
+                        for (path, e) in batch {
+                            let full = format!("{}/{path}", self.files.connection.directory);
+                            let bytes = data.remove(&full).ok_or_else(|| {
+                                Error::Invalid("Неполная загрузка XML из Git".into())
+                            })?;
+                            c.check()?;
+                            self.files.put(path, e, &bytes, c)?;
+                            downloaded += 1;
+                        }
+                        Ok(())
+                    })();
+                    report(downloaded);
+                    written?;
                 }
                 Ok(())
             },

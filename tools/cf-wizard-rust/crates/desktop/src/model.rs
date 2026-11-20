@@ -1,5 +1,7 @@
 //! Presentation state. IO executes in jobs; dependency and build decisions live in services.
-use cf_application::{BuildOptions, Cancellation, DependencyEngine, MetadataSource, PreparedPlan};
+use cf_application::{
+    BuildOptions, Cancellation, DependencyEngine, MetadataSource, PrefetchProgress, PreparedPlan,
+};
 use cf_domain::{BuildMode, Error, Result};
 use cf_infrastructure::{
     engine::RustEngine,
@@ -606,7 +608,7 @@ impl Model {
             callback,
             Some("index"),
             move |c, log| {
-                let report = indexing::update(
+                let report = indexing::update_with_prefetch_progress(
                     source.as_ref(),
                     Path::new(&directory),
                     &c,
@@ -617,6 +619,16 @@ impl Model {
                                 json!({"done":done,"total":total}),
                             ));
                         }
+                    },
+                    &|progress| {
+                        let caption = match progress {
+                            PrefetchProgress::CheckingCache => "Проверяю Git-кэш…".to_owned(),
+                            PrefetchProgress::Downloading { ready, total, .. } => {
+                                format!("Загрузка XML из Git · {ready} / {total}")
+                            }
+                        };
+                        let _ = proxy
+                            .send_event(Event::Progress("index-prefetch".into(), json!(caption)));
                     },
                 )?;
                 let status =

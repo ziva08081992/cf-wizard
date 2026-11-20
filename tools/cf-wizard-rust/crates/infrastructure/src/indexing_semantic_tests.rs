@@ -280,6 +280,7 @@ fn cancel_immediately_before_publication_preserves_the_published_cache() {
         &folder,
         &cancel,
         &|_, _| {},
+        &|_| {},
         |point| match point {
             PublicationPoint::BeforeCommit => cancel.cancel(),
             PublicationPoint::AfterCommit => {
@@ -304,7 +305,7 @@ fn cancel_after_publication_reports_committed_success() {
     replace_text(&mut data, "Enums/Статусы.xml", "Первый", "Обновлённый");
     let changed = source(&data, &root, true);
     let cancel = Cancellation::default();
-    let result = update_core(&changed, &folder, &cancel, &|_, _| {}, |point| {
+    let result = update_core(&changed, &folder, &cancel, &|_, _| {}, &|_| {}, |point| {
         if matches!(point, PublicationPoint::AfterCommit) {
             cancel.cancel();
         }

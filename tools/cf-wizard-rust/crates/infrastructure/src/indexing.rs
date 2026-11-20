@@ -14,7 +14,7 @@ use crate::{
     source::{no_links, normal_path},
     source_reader::SourceDocument,
 };
-use cf_application::{Cancellation, MetadataSource};
+use cf_application::{Cancellation, MetadataSource, PrefetchProgress};
 use cf_domain::{
     Error, Result,
     source_facts::{FactVersions, RULE_PROFILE, SourceProof},
@@ -24,6 +24,7 @@ use serde::Serialize;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
@@ -343,7 +344,24 @@ pub fn update(
     cancel: &Cancellation,
     progress: &dyn Fn(usize, usize),
 ) -> Result<IndexUpdate> {
-    update_core(source, directory, cancel, progress, |_| {})
+    update_with_prefetch_progress(source, directory, cancel, progress, &|_| {})
+}
+
+pub fn update_with_prefetch_progress(
+    source: &dyn MetadataSource,
+    directory: &Path,
+    cancel: &Cancellation,
+    progress: &dyn Fn(usize, usize),
+    prefetch_progress: &dyn Fn(PrefetchProgress),
+) -> Result<IndexUpdate> {
+    update_core(
+        source,
+        directory,
+        cancel,
+        progress,
+        prefetch_progress,
+        |_| {},
+    )
 }
 #[derive(Clone, Copy)]
 enum PublicationPoint {
@@ -355,6 +373,7 @@ fn update_core(
     directory: &Path,
     cancel: &Cancellation,
     progress: &dyn Fn(usize, usize),
+    prefetch_progress: &dyn Fn(PrefetchProgress),
     publication_hook: impl Fn(PublicationPoint),
 ) -> Result<IndexUpdate> {
     cancel.check()?;
@@ -504,7 +523,25 @@ fn update_core(
         })
         .map(|e| e.path.clone())
         .collect();
-    source.prefetch(&fetch, cancel)?;
+    let downloaded = Cell::new(0);
+    source
+        .prefetch_with_progress(&fetch, cancel, &|progress| {
+            if let PrefetchProgress::Downloading {
+                downloaded: count, ..
+            } = progress
+            {
+                downloaded.set(count);
+            }
+            prefetch_progress(progress);
+        })
+        .map_err(|error| match error {
+            Error::Cancelled => Error::Cancelled,
+            error if source.manifest().is_some() => Error::External(format!(
+                "Подготовка XML для индекса · загружено файлов за эту попытку: {} · {error}",
+                downloaded.get()
+            )),
+            error => error,
+        })?;
     let transaction = db.transaction().map_err(crate::external)?;
     let owners: BTreeSet<_> = rows
         .iter()

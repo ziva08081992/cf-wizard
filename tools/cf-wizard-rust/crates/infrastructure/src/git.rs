@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
 #[cfg(test)]
@@ -222,6 +222,7 @@ fn quote(value: &str) -> String {
 pub enum HttpFailure {
     Status(u16),
     ResponseTooLarge,
+    Transport { timed_out: bool, error: Error },
     Fatal(Error),
 }
 
@@ -236,8 +237,80 @@ impl HttpFailure {
         match self {
             Self::Status(status) => status_error(status),
             Self::ResponseTooLarge => invalid("Ответ Git API превышает допустимый размер"),
-            Self::Fatal(error) => error,
+            Self::Fatal(error) | Self::Transport { error, .. } => error,
         }
+    }
+}
+
+fn request_kind(path: &str) -> &'static str {
+    match path {
+        "file-contents" => "file-contents",
+        path if path.starts_with("raw/") => "raw",
+        path if path.contains("trees/") => "tree",
+        _ => "Git API",
+    }
+}
+
+fn transport_failure(
+    path: &str,
+    stage: &str,
+    elapsed: Duration,
+    error: &(dyn std::error::Error + 'static),
+) -> HttpFailure {
+    let mut cause = Some(error);
+    let mut timed_out = false;
+    let mut connect = false;
+    let mut os_error = None;
+    while let Some(error) = cause {
+        if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+            timed_out |= error.is_timeout();
+            connect |= error.is_connect();
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            timed_out |= error.kind() == std::io::ErrorKind::TimedOut;
+            os_error = error.raw_os_error().or(os_error);
+            cause = error.get_ref().map(|error| error as &dyn std::error::Error);
+        } else {
+            cause = error.source();
+        }
+    }
+    let reason = if timed_out {
+        "истекло время ожидания"
+    } else if os_error.is_some_and(|code| {
+        matches!(
+            code as u32,
+            0x80090325 | 0x80090328 | 0x800B0109 | 0x800B010F
+        )
+    }) {
+        "ошибка сертификата TLS"
+    } else if connect {
+        "сбой соединения"
+    } else {
+        "сбой транспорта"
+    };
+    let endpoint = request_kind(path);
+    let mut message = format!(
+        "Git API · {endpoint} · {stage} · {reason} · {} мс",
+        elapsed.as_millis()
+    );
+    if let Some(code) = os_error {
+        message.push_str(&format!(" · код ОС {code}"));
+    }
+    HttpFailure::Transport {
+        timed_out,
+        error: Error::External(message),
+    }
+}
+
+fn request_failure(path: &str, elapsed: Duration, error: HttpFailure) -> Error {
+    match error {
+        HttpFailure::Status(status) => Error::Invalid(format!(
+            "{} Запрос {} · {} мс.",
+            status_error(status),
+            request_kind(path),
+            elapsed.as_millis()
+        )),
+        error => error.into_domain_error(),
     }
 }
 
@@ -334,8 +407,9 @@ impl Http for Https {
         raw: bool,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>> {
+        let started = Instant::now();
         self.bytes_typed(path, query, body, limit, raw, cancel)
-            .map_err(HttpFailure::into_domain_error)
+            .map_err(|error| request_failure(path, started.elapsed(), error))
     }
 
     fn bytes_typed(
@@ -392,9 +466,10 @@ impl Http for Https {
             if let Some(value) = body {
                 request = request.json(&value);
             }
-            let mut response = request
-                .send()
-                .map_err(|_| invalid("Ошибка HTTPS: проверьте адрес, сеть и сертификат сервера"))?;
+            let started = Instant::now();
+            let mut response = request.send().map_err(|error| {
+                transport_failure(path, "ожидание ответа", started.elapsed(), &error)
+            })?;
             cancel.check()?;
             if !response.status().is_success() {
                 return Err(HttpFailure::Status(response.status().as_u16()));
@@ -407,7 +482,9 @@ impl Http for Https {
                 .by_ref()
                 .take(read_limit)
                 .read_to_end(&mut data)
-                .map_err(|_| invalid("Ошибка чтения Git API"))?;
+                .map_err(|error| {
+                    transport_failure(path, "чтение ответа", started.elapsed(), &error)
+                })?;
             cancel.check()?;
             if data.len() > limit {
                 return Err(HttpFailure::ResponseTooLarge);
@@ -803,15 +880,44 @@ impl GitProvider for Gitea {
             }
             let batch = &files[start..end];
             let paths = batch.iter().map(|(p, _)| p).collect::<Vec<_>>();
-            let value = self.http.json(
-                "file-contents",
-                &[
-                    ("ref".into(), revision.into()),
-                    ("body".into(), json!({"files":paths}).to_string()),
-                ],
-                None,
-                c,
-            )?;
+            let query = [
+                ("ref".into(), revision.into()),
+                ("body".into(), json!({"files":paths}).to_string()),
+            ];
+            let request = || {
+                let result = self.http.bytes_typed(
+                    "file-contents",
+                    &query,
+                    None,
+                    32 * 1024 * 1024,
+                    false,
+                    c,
+                );
+                c.check()?;
+                result
+            };
+            let started = Instant::now();
+            let bytes = match request() {
+                Err(
+                    first @ HttpFailure::Transport {
+                        timed_out: true, ..
+                    },
+                ) => {
+                    profile::note("gitea.file_contents_timeout_retry", "source.prefetch", 1);
+                    let retry_started = Instant::now();
+                    request().map_err(|error| match error {
+                        HttpFailure::Fatal(Error::Cancelled) => Error::Cancelled,
+                        error => Error::External(format!(
+                            "Первый запрос: {}. Повтор пакетного запроса после таймаута: {}",
+                            first.into_domain_error(),
+                            request_failure("file-contents", retry_started.elapsed(), error)
+                        )),
+                    })?
+                }
+                result => result
+                    .map_err(|error| request_failure("file-contents", started.elapsed(), error))?,
+            };
+            let value: Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
             for row in value.as_array().ok_or_else(malformed)? {
                 let Some(path) = row["path"].as_str() else {
                     continue;

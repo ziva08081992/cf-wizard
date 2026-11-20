@@ -254,6 +254,7 @@ pub fn run() -> Result<()> {
             TaoEvent::UserEvent(Event::Progress(kind,value))=>{
                 if kind=="gitTaskProgress"{emit(&view,&kind,vec![value]);}
                 else if kind=="pickCache"{if let Some(id)=value["id"].as_u64(){reply(&view,id,value["path"].clone());}}
+                else if kind=="index-prefetch"{if let Some(caption)=value.as_str(){model.status=caption.into();paint(&view,&mut model);}}
                 else if kind=="index"{model.status=format!("Обновление индекса · {} / {}",value["done"],value["total"]);paint(&view,&mut model);}
             }
             TaoEvent::UserEvent(Event::Platforms(rows))=>{model.add_platforms(rows);paint(&view,&mut model);}
