@@ -656,3 +656,57 @@ fn compiled_full_and_stub_descriptors_preserve_generated_identity() {
         }
     }
 }
+#[test]
+fn catalog_stub_keeps_all_owners_required_by_its_data_lock_field() {
+    let files = BTreeMap::from([
+        ("Configuration.xml", r#"<MetaDataObject><Configuration><Properties><Name>OwnerLock</Name></Properties><ChildObjects><CommonModule>Root</CommonModule><Catalog>Stages</Catalog><Catalog>Other</Catalog><Catalog>OwnerA</Catalog><Catalog>OwnerB</Catalog><Catalog>OtherOwner</Catalog></ChildObjects></Configuration></MetaDataObject>"#.to_owned()),
+        ("CommonModules/Root.xml", r#"<MetaDataObject><CommonModule><Properties><Name>Root</Name><Comment>Catalog.Stages Catalog.Other</Comment></Properties></CommonModule></MetaDataObject>"#.to_owned()),
+        ("Catalogs/Stages.xml", r#"<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><Catalog><Properties><Name>Stages</Name><Owners><xr:Item>Catalog.OwnerA</xr:Item><xr:Item>Catalog.OwnerB</xr:Item></Owners><DataLockFields><xr:Field>Catalog.Stages.StandardAttribute.Owner</xr:Field></DataLockFields></Properties></Catalog></MetaDataObject>"#.to_owned()),
+        ("Catalogs/Other.xml", r#"<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><Catalog><Properties><Name>Other</Name><Owners><xr:Item>Catalog.OtherOwner</xr:Item></Owners><DataLockFields><xr:Field>Catalog.Other.StandardAttribute.Code</xr:Field></DataLockFields></Properties></Catalog></MetaDataObject>"#.to_owned()),
+        ("Catalogs/OwnerA.xml", "<MetaDataObject><Catalog><Properties><Name>OwnerA</Name></Properties></Catalog></MetaDataObject>".to_owned()),
+        ("Catalogs/OwnerB.xml", "<MetaDataObject><Catalog><Properties><Name>OwnerB</Name></Properties></Catalog></MetaDataObject>".to_owned()),
+        ("Catalogs/OtherOwner.xml", "<MetaDataObject><Catalog><Properties><Name>OtherOwner</Name></Properties></Catalog></MetaDataObject>".to_owned()),
+    ]);
+    let source: BTreeMap<_, _> = files
+        .into_iter()
+        .map(|(path, xml)| (path, STANDARD.encode(xml)))
+        .collect();
+    let temp = tempfile::tempdir().unwrap();
+    let src = tests::source(
+        &serde_json::json!({"source": source}),
+        &temp.path().join("source"),
+        false,
+    );
+    let cancel = Cancellation::default();
+    let plan = RustEngine
+        .preview(
+            &src,
+            None,
+            &BTreeSet::from(["CommonModule.Root".into()]),
+            &BTreeSet::new(),
+            &cancel,
+        )
+        .unwrap();
+    assert!(plan.composition().complete());
+
+    let stage = temp.path().join("stage");
+    plan.write(
+        &src,
+        &BTreeSet::new(),
+        &stage,
+        &temp.path().join("merge.xml"),
+        &cancel,
+    )
+    .unwrap();
+    let xml = fs::read_to_string(stage.join("Catalogs/Stages.xml")).unwrap();
+    assert!(xml.contains("<xr:Field>Catalog.Stages.StandardAttribute.Owner</xr:Field>"));
+    for name in ["OwnerA", "OwnerB"] {
+        assert!(
+            xml.contains(&format!("<xr:Item>Catalog.{name}</xr:Item>")),
+            "{xml}"
+        );
+        assert!(stage.join(format!("Catalogs/{name}.xml")).is_file());
+        assert!(plan.composition().stubs[&format!("Catalog.{name}")].required());
+    }
+    assert!(!stage.join("Catalogs/OtherOwner.xml").exists());
+}
