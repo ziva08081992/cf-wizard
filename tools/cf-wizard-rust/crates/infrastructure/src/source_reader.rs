@@ -3,10 +3,14 @@ pub(crate) use crate::reference_lexer::references;
 use crate::{
     canonical::sha256,
     source_xml::{CORE, CURRENT, READABLE, SHEET, SourceXml, UI, XSI},
+    xml::XmlInput,
 };
 use cf_application::profile;
 use cf_domain::{Error, Facts, Result, source_facts::*};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 #[cfg(test)]
 #[path = "source_reader_tests.rs"]
 mod tests;
@@ -14,7 +18,7 @@ mod tests;
 pub(crate) struct SourceDocument {
     pub view: SourceXml,
     pub facts: SourceFacts,
-    pub node_ids: Vec<String>,
+    pub node_ids: Vec<Arc<str>>,
     pub object: usize,
     subtree_targets: Vec<BTreeSet<String>>,
 }
@@ -36,20 +40,32 @@ fn object_node(view: &SourceXml, object_key: &str, path: &str) -> Result<usize> 
 }
 impl SourceDocument {
     /// A compatible cache supplies facts; the current source supplies byte spans.
+    #[cfg(test)]
     pub fn cached(
         object_key: &str,
         path: &str,
         bytes: &[u8],
+        proof: SourceProof,
+        facts: SourceFacts,
+    ) -> Result<Self> {
+        Self::cached_input(object_key, path, XmlInput::Bytes(bytes), proof, facts)
+    }
+
+    pub(crate) fn cached_input(
+        object_key: &str,
+        path: &str,
+        input: XmlInput<'_>,
         mut proof: SourceProof,
         mut facts: SourceFacts,
     ) -> Result<Self> {
         profile::measure(
             "document.cached",
             "engine.document",
-            bytes.len(),
+            input.len(),
             Some(object_key),
             || {
-                let view = SourceXml::parse(bytes)?;
+                let view = SourceXml::parse_input(input)?;
+                let bytes = view.xml.source.as_bytes();
                 let object = object_node(&view, object_key, path)?;
                 let digest =
                     profile::value("hash.sha256.content", "document", bytes.len(), None, || {
@@ -64,24 +80,21 @@ impl SourceDocument {
                         "Кэш относится к другому объекту или reader profile".into(),
                     ));
                 }
-                let node_ids = profile::value(
-                    "document.addresses",
-                    "document.cached",
-                    bytes.len(),
-                    None,
-                    || view.addresses(object_key),
-                );
-                for (id, address) in node_ids.iter().enumerate() {
-                    let expected_parent = view.xml.elements[id]
-                        .parent
-                        .map(|parent| node_ids[parent].as_str());
-                    let fragment = facts
+                // Build each expected address from XML. Only a verified key becomes
+                // the prefix for its children and the retained document address.
+                let mut address_check =
+                    profile::span("document.addresses", "document.cached", bytes.len(), None);
+                let mut node_ids: Vec<Arc<str>> = Vec::with_capacity(view.xml.elements.len());
+                for (id, element) in view.xml.elements.iter().enumerate() {
+                    let expected_parent = element.parent.map(|parent| node_ids[parent].as_ref());
+                    let address = view.address(id, expected_parent.unwrap_or(object_key));
+                    let (key, fragment) = facts
                         .fragments
-                        .get(address)
+                        .get_key_value(address.as_str())
                         .ok_or_else(|| Error::Invalid("Кэш потерял source fragment".into()))?;
-                    let span = &view.xml.elements[id].span;
-                    if fragment.origin.path != path
-                        || fragment.origin.sha256 != digest
+                    let span = &element.span;
+                    if fragment.origin.path.as_ref() != path
+                        || fragment.origin.sha256.as_ref() != digest
                         || fragment.origin.span != Some((span.start, span.end))
                         || fragment.tag != view.names[id]
                         || fragment.parent.as_deref() != expected_parent
@@ -90,7 +103,10 @@ impl SourceDocument {
                             "Кэш не соответствует текущим source spans".into(),
                         ));
                     }
+                    node_ids.push(key.clone());
                 }
+                address_check.success();
+                drop(address_check);
                 // Byte-identical facts can be used by a newer Git revision. Their current
                 // proof context is rebuilt, never inherited from the cached commit SHA.
                 proof.observe(path.into(), InputObservation::Content { sha256: digest })?;
@@ -112,37 +128,55 @@ impl SourceDocument {
         bytes: &[u8],
         proof: SourceProof,
     ) -> Result<Self> {
+        Self::descriptor_input(object_key, path, XmlInput::Bytes(bytes), proof)
+    }
+
+    pub(crate) fn descriptor_input(
+        object_key: &str,
+        path: &str,
+        input: XmlInput<'_>,
+        proof: SourceProof,
+    ) -> Result<Self> {
         profile::measure(
             "document.descriptor",
             "engine.document",
-            bytes.len(),
+            input.len(),
             Some(object_key),
             || {
-                let view = SourceXml::parse(bytes)
+                let view = SourceXml::parse_input(input)
                     .map_err(|error| Error::Invalid(format!("{path}: {error}")))?;
                 let object = object_node(&view, object_key, path)?;
-                Self::extract(object_key, path, bytes, proof, view, object, true)
+                Self::extract(object_key, path, proof, view, object, true)
             },
         )
     }
+    #[cfg(test)]
     pub fn sidecar(owner: &str, path: &str, bytes: &[u8], proof: SourceProof) -> Result<Self> {
+        Self::sidecar_input(owner, path, XmlInput::Bytes(bytes), proof)
+    }
+
+    pub(crate) fn sidecar_input(
+        owner: &str,
+        path: &str,
+        input: XmlInput<'_>,
+        proof: SourceProof,
+    ) -> Result<Self> {
         profile::measure(
             "document.sidecar",
             "engine.document",
-            bytes.len(),
+            input.len(),
             Some(owner),
             || {
-                let view = SourceXml::parse(bytes)
+                let view = SourceXml::parse_input(input)
                     .map_err(|error| Error::Invalid(format!("{path}: {error}")))?;
                 let object = view.xml.root;
-                Self::extract(owner, path, bytes, proof, view, object, false)
+                Self::extract(owner, path, proof, view, object, false)
             },
         )
     }
     fn extract(
         object_key: &str,
         path: &str,
-        bytes: &[u8],
         mut proof: SourceProof,
         view: SourceXml,
         object: usize,
@@ -151,19 +185,18 @@ impl SourceDocument {
         profile::measure(
             "document.extract",
             "engine.document",
-            bytes.len(),
+            view.xml.source.len(),
             Some(object_key),
             || {
+                let bytes = view.xml.source.as_bytes();
                 let digest =
                     profile::value("hash.sha256.content", "document", bytes.len(), None, || {
                         sha256(bytes)
                     });
-                proof.observe(
-                    path.into(),
-                    InputObservation::Content {
-                        sha256: digest.clone(),
-                    },
-                )?;
+                let file_hash = Arc::<str>::from(digest.as_str());
+                let file_path = Arc::<str>::from(path);
+                let owner = Arc::<str>::from(object_key);
+                proof.observe(path.into(), InputObservation::Content { sha256: digest })?;
                 let node_ids = if metadata {
                     view.addresses(object_key)
                 } else {
@@ -235,7 +268,7 @@ impl SourceDocument {
                         node_ids[id].clone(),
                         SourceFragment {
                             id: node_ids[id].clone(),
-                            owner: object_key.into(),
+                            owner: Arc::clone(&owner),
                             parent: parent.map(|p| node_ids[p].clone()),
                             kind,
                             tag: view.names[id].clone(),
@@ -243,8 +276,8 @@ impl SourceDocument {
                             ordinal: view.ordinals[id],
                             uuid: view.xml.attr(id, "uuid").map(str::to_owned),
                             origin: Origin {
-                                path: path.into(),
-                                sha256: digest.clone(),
+                                path: file_path.clone(),
+                                sha256: file_hash.clone(),
                                 node: view.path(id),
                                 span: Some((element.span.start, element.span.end)),
                             },
@@ -493,18 +526,18 @@ impl SourceDocument {
     /// rescanning provisional output. Each subtree relation is assembled once.
     fn reference_targets(
         view: &SourceXml,
-        node_ids: &[String],
+        node_ids: &[Arc<str>],
         facts: &SourceFacts,
     ) -> Result<Vec<BTreeSet<String>>> {
         let positions: BTreeMap<_, _> = node_ids
             .iter()
             .enumerate()
-            .map(|(id, address)| (address.as_str(), id))
+            .map(|(id, address)| (address.as_ref(), id))
             .collect();
         let mut targets = vec![BTreeSet::new(); node_ids.len()];
         for reference in &facts.references {
             let id = *positions
-                .get(reference.fragment.as_str())
+                .get(reference.fragment.as_ref())
                 .ok_or_else(|| Error::Invalid("Ссылка не относится к узлу исходного XML".into()))?;
             targets[id].insert(reference.target.key());
         }

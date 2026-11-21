@@ -11,7 +11,7 @@ use serde::{
     Deserialize, Deserializer, Serialize,
     de::{self, IgnoredAny, SeqAccess, Visitor},
 };
-use std::{collections::BTreeMap, fmt, fmt::Write as _, io, marker::PhantomData};
+use std::{collections::BTreeMap, fmt, fmt::Write as _, io, marker::PhantomData, sync::Arc};
 
 #[cfg(test)]
 #[path = "facts_compact_performance.rs"]
@@ -89,8 +89,8 @@ pub(super) struct DescriptorFacts {
     object: String,
     versions: FactVersions,
     proof: SourceProof,
-    origin: (String, String),
-    names: LimitedVec<ExpandedName, NODES>,
+    origin: (Arc<str>, Arc<str>),
+    names: LimitedVec<Arc<ExpandedName>, NODES>,
     nodes: LimitedVec<Node, NODES>,
     references: LimitedVec<Reference, REFERENCES>,
     coverage: BTreeMap<Facet, Coverage>,
@@ -181,7 +181,7 @@ impl DescriptorFacts {
                 names.push(tag.clone());
                 next
             });
-            ids.insert(address.as_str(), nodes.len() as u32);
+            ids.insert(address.as_ref(), nodes.len() as u32);
             nodes.push(Node(
                 parent,
                 name,
@@ -421,15 +421,16 @@ impl DescriptorFacts {
     }
 
     fn expand_checked(self, lengths: Vec<Lineage>) -> Result<SourceFacts> {
-        let mut fragments: BTreeMap<String, SourceFragment> = BTreeMap::new();
-        let mut addresses = Vec::with_capacity(lengths.len());
+        let owner = Arc::<str>::from(self.object.as_str());
+        let mut fragments: BTreeMap<Arc<str>, SourceFragment> = BTreeMap::new();
+        let mut addresses: Vec<Arc<str>> = Vec::with_capacity(lengths.len());
         for (Node(parent, name, ordinal, kind, label, uuid, span), length) in
             self.nodes.0.into_iter().zip(lengths)
         {
             let name = at(&self.names.0, name)?;
             let parent = parent.map(|id| at(&addresses, id)).transpose()?;
             let mut address = String::with_capacity(length.address - 2);
-            let prefix = parent.map_or(self.object.as_str(), String::as_str);
+            let prefix = parent.map_or(self.object.as_str(), AsRef::as_ref);
             write!(
                 address,
                 "{prefix}/{{{}}}{}[{ordinal}]",
@@ -447,9 +448,10 @@ impl DescriptorFacts {
                 name: name.clone(),
                 ordinal,
             });
+            let address: Arc<str> = address.into();
             let fragment = SourceFragment {
                 id: address.clone(),
-                owner: self.object.clone(),
+                owner: Arc::clone(&owner),
                 parent: parent.cloned(),
                 kind,
                 tag: name.clone(),

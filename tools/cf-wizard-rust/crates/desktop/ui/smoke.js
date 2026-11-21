@@ -50,9 +50,36 @@
       document.querySelector("[data-status]").textContent === previewStatus, "journal status restored");
     check("journal rendered and status restored", journalText.includes("dependencies-ready") &&
       !state.busy && state.status === previewStatus && state.statusKind === previewKind);
+    document.querySelector('[data-action="settings"]').click();
+    const preferences = document.getElementById("cf-preferences");
+    const budgetInput = document.getElementById("cf-memory-budget");
+    check("memory budget settings open in auto", preferences.open && budgetInput.value === "");
+    budgetInput.value = "4096";
+    budgetInput.dispatchEvent(new Event("change", {bubbles: true}));
+    check("manual memory budget accepted", (await rpc("snapshot")).values.memory_budget_mib === "4096");
+    const available = document.getElementById("cf-memory-available");
+    const budgetWarning = document.getElementById("cf-memory-budget-warning");
+    check("available physical memory is displayed", !available.hidden && available.textContent.includes("МиБ"));
+    budgetInput.value = "4294967295";
+    budgetInput.dispatchEvent(new Event("change", {bubbles: true}));
+    await wait(() => !budgetWarning.hidden, "large budget warning");
+    check("warning preserves configured budget", (await rpc("snapshot")).values.memory_budget_mib === budgetInput.value);
+    budgetInput.value = "";
+    budgetInput.dispatchEvent(new Event("change", {bubbles: true}));
+    check("memory budget can return to auto", (await rpc("snapshot")).values.memory_budget_mib === "" && budgetWarning.hidden);
+    preferences.querySelector("button[type=submit]").click();
     document.querySelector('[data-action="help"]').click();
     check("embedded help", document.querySelector(".cf-help").open);
     document.querySelector(".cf-help button[type=submit]").click();
+    document.querySelector('[data-action="about"]').click();
+    const about = document.querySelector('dialog[aria-labelledby="cf-dialog-title"]');
+    await wait(() => about.open, "about dialog opens");
+    check("about shows ZiVa and the project repository",
+      about.querySelector("[data-dialog-text]").textContent.includes("Автор CF Wizard — ZiVa") &&
+      !about.querySelector("[data-dialog-links]").hidden &&
+      about.querySelector('[data-link="repository"]').textContent === "Репозиторий CF Wizard" &&
+      about.querySelector('[data-link="upstream"]').textContent === "Проект alonehobo");
+    about.querySelector("button[type=submit]").click();
     await rpc("editField", "task", "08/11/2026: произвольный комментарий");
     check("arbitrary task comment", (await rpc("snapshot")).values.task.includes("произвольный"));
     await rpc("setSourceMode", "git");

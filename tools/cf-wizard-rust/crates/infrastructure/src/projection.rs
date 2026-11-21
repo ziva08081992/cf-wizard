@@ -116,11 +116,11 @@ pub(crate) fn compile(
                 .node_ids
                 .iter()
                 .enumerate()
-                .map(|(id, name)| (name.as_str(), id))
+                .map(|(id, name)| (name.as_ref(), id))
                 .collect();
             for reference in &document.facts.references {
                 references_by_node
-                    .entry(positions[reference.fragment.as_str()])
+                    .entry(positions[reference.fragment.as_ref()])
                     .or_default()
                     .push(reference);
             }
@@ -300,14 +300,14 @@ pub(crate) fn compile(
                 .iter()
                 .enumerate()
                 .filter(|(id, _)| visible[*id])
-                .map(|(_, name)| name.clone())
+                .map(|(_, name)| name.to_string())
                 .collect();
             let references = document
                 .facts
                 .references
                 .iter()
                 .filter(|reference| {
-                    let id = positions[reference.fragment.as_str()];
+                    let id = positions[reference.fragment.as_ref()];
                     visible[id] && !matches!(decisions.get(&id), Some(Decision::Empty))
                 })
                 .cloned()

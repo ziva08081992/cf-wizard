@@ -1,13 +1,17 @@
 //! Namespace-scoped source view. Tokenization and byte spans belong to `xml`.
 //! A frame is allocated only when xmlns bindings change, not for every node.
-use crate::xml::{Xml, unescape};
+use crate::xml::{Xml, XmlInput, unescape};
 use cf_application::profile;
 use cf_domain::{
     Error, Result,
     package_plan::{XmlPart, XmlValue},
     source_facts::{ExpandedName, NodeStep},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+    sync::Arc,
+};
 
 pub(crate) const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 pub(crate) const CORE: &str = "http://v8.1c.ru/8.1/data/core";
@@ -27,7 +31,7 @@ pub(crate) struct SourceXml {
     pub xml: Xml,
     scopes: Vec<Scope>,
     node_scope: Vec<usize>,
-    pub names: Vec<ExpandedName>,
+    pub names: Vec<Arc<ExpandedName>>,
     pub ordinals: Vec<usize>,
 }
 fn invalid(message: impl Into<String>) -> Error {
@@ -47,9 +51,14 @@ pub(crate) fn ncname(text: &str) -> bool {
 }
 impl SourceXml {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        profile::measure("xml.parse", "document", bytes.len(), None, || {
-            let xml = profile::measure("xml.spans", "xml.parse", bytes.len(), None, || {
-                Xml::parse(bytes)
+        Self::parse_input(XmlInput::Bytes(bytes))
+    }
+
+    pub(crate) fn parse_input(input: XmlInput<'_>) -> Result<Self> {
+        let len = input.len();
+        profile::measure("xml.parse", "document", len, None, || {
+            let xml = profile::measure("xml.spans", "xml.parse", len, None, || {
+                Xml::parse_input(input)
             })?;
             let mut result = Self {
                 xml,
@@ -64,7 +73,7 @@ impl SourceXml {
                 names: vec![],
                 ordinals: vec![],
             };
-            let mut sibling_counts: BTreeMap<(Option<usize>, ExpandedName), usize> =
+            let mut sibling_counts: BTreeMap<(Option<usize>, Arc<ExpandedName>), usize> =
                 BTreeMap::new();
             for id in 0..result.xml.elements.len() {
                 let element = &result.xml.elements[id];
@@ -99,7 +108,7 @@ impl SourceXml {
                     index
                 };
                 result.node_scope.push(scope);
-                let name = result.resolve(id, &result.xml.elements[id].name, false)?;
+                let name = Arc::new(result.resolve(id, &result.xml.elements[id].name, false)?);
                 let count = sibling_counts
                     .entry((result.xml.elements[id].parent, name.clone()))
                     .or_default();
@@ -179,18 +188,29 @@ impl SourceXml {
         steps
     }
     /// XML parser order guarantees each parent address is already available.
-    pub fn addresses(&self, prefix: &str) -> Vec<String> {
-        let mut addresses: Vec<String> = Vec::with_capacity(self.xml.elements.len());
+    pub fn addresses(&self, prefix: &str) -> Vec<Arc<str>> {
+        let mut addresses: Vec<Arc<str>> = Vec::with_capacity(self.xml.elements.len());
         for (id, element) in self.xml.elements.iter().enumerate() {
             let parent = element.parent.map_or(prefix, |parent| &addresses[parent]);
-            let name = &self.names[id];
-            let ordinal = self.ordinals[id];
-            addresses.push(format!(
-                "{parent}/{{{}}}{}[{ordinal}]",
-                name.uri, name.local
-            ));
+            addresses.push(self.address(id, parent).into());
         }
         addresses
+    }
+
+    pub fn address(&self, id: usize, parent: &str) -> String {
+        let name = &self.names[id];
+        let ordinal = self.ordinals[id];
+        // The separators /{}[] occupy five bytes.
+        let ordinal_digits = ordinal.checked_ilog10().map_or(1, |log| log as usize + 1);
+        let capacity = parent.len() + name.uri.len() + name.local.len() + 5 + ordinal_digits;
+        let mut address = String::with_capacity(capacity);
+        write!(
+            address,
+            "{parent}/{{{}}}{}[{ordinal}]",
+            name.uri, name.local
+        )
+        .expect("writing to a String is infallible");
+        address
     }
     pub fn value(&self, id: usize) -> Result<XmlValue> {
         self.filtered_value(id, &BTreeSet::new(), &BTreeSet::new())
@@ -204,7 +224,7 @@ impl SourceXml {
     ) -> Result<XmlValue> {
         if emptied.contains(&id) {
             return Ok(XmlValue {
-                name: self.names[id].clone(),
+                name: self.names[id].as_ref().clone(),
                 attributes: vec![],
                 parts: vec![],
             });
@@ -250,7 +270,7 @@ impl SourceXml {
             }
         }
         Ok(XmlValue {
-            name: self.names[id].clone(),
+            name: self.names[id].as_ref().clone(),
             attributes,
             parts,
         })
@@ -259,6 +279,30 @@ impl SourceXml {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn addresses_allocate_exactly_the_utf8_length() {
+        let input = format!(
+            "<корень xmlns='urn:пример'>{}</корень>",
+            "<узел/>".repeat(101)
+        );
+        let view = SourceXml::parse(input.as_bytes()).unwrap();
+        let addresses = view.addresses("Объект");
+        let root = "Объект/{urn:пример}корень[0]";
+        assert_eq!(addresses[0].as_ref(), root);
+        for ordinal in 0..101 {
+            assert_eq!(
+                addresses[ordinal + 1].as_ref(),
+                format!("{root}/{{urn:пример}}узел[{ordinal}]")
+            );
+        }
+        for (id, element) in view.xml.elements.iter().enumerate() {
+            let parent = element
+                .parent
+                .map_or("Объект", |index| addresses[index].as_ref());
+            let address = view.address(id, parent);
+            assert_eq!(address.len(), address.capacity());
+        }
+    }
     #[test]
     fn namespace_frames_are_shared_and_scope_changes_are_local() {
         let input = format!(

@@ -53,6 +53,30 @@ fn v3_roundtrip_equals_v2_and_reuses_the_actual_xml_proof() {
     let v3 = read(&compact, &hash).unwrap();
     assert_eq!(facts, v2);
     assert_eq!(facts, v3);
+    for document in [&facts, &v2, &v3] {
+        for (key, fragment) in &document.fragments {
+            assert!(Arc::ptr_eq(key, &fragment.id));
+            if let Some(parent) = &fragment.parent {
+                assert!(Arc::ptr_eq(parent, &document.fragments[parent].id));
+            }
+        }
+        for address in document
+            .references
+            .iter()
+            .map(|r| &r.fragment)
+            .chain(document.coverage_notes.iter().map(|note| &note.fragment))
+        {
+            assert!(Arc::ptr_eq(address, &document.fragments[address].id));
+        }
+    }
+    for document in [&facts, &v3] {
+        let first = document.fragments.values().next().unwrap();
+        assert!(document.fragments.values().all(|fragment| {
+            Arc::ptr_eq(&first.owner, &fragment.owner)
+                && Arc::ptr_eq(&first.origin.path, &fragment.origin.path)
+                && Arc::ptr_eq(&first.origin.sha256, &fragment.origin.sha256)
+        }));
+    }
     assert_eq!(
         serde_json::to_vec(&v2).unwrap(),
         serde_json::to_vec(&v3).unwrap()
@@ -66,6 +90,11 @@ fn v3_roundtrip_equals_v2_and_reuses_the_actual_xml_proof() {
     assert_eq!(v3.facts.proof.snapshot, "current");
     assert_eq!(v2.facts, v3.facts);
     assert_eq!(v2.node_ids, v3.node_ids);
+    for document in [&v2, &v3] {
+        for address in &document.node_ids {
+            assert!(Arc::ptr_eq(address, &document.facts.fragments[address].id));
+        }
+    }
     let mut changed = XML.to_vec();
     changed.push(b' ');
     assert!(SourceDocument::cached(OBJECT, PATH, &changed, proof("current"), v3.facts).is_err());
@@ -107,7 +136,7 @@ fn v3_framing_and_existing_descriptor_guards_fail_closed() {
 fn preflight_matches_exact_serde_bytes_and_charges_links_before_expansion() {
     let (facts, _) = fixture();
     let mut wire = DescriptorFacts::from_facts(&facts).unwrap().unwrap();
-    wire.names.0[0].uri = "urn:\\unicode\t\"тег\"\n".into();
+    Arc::make_mut(&mut wire.names.0[0]).uri = "urn:\\unicode\t\"тег\"\n".into();
     wire.nodes.0[0].4 = "\u{1}Фрагмент".into();
     let (charged, _) = wire.preflight(LIMIT).unwrap();
     let expanded = wire.expand().unwrap();
@@ -121,10 +150,10 @@ fn preflight_matches_exact_serde_bytes_and_charges_links_before_expansion() {
 fn small_wire_cannot_allocate_an_expanded_graph_over_the_limit() {
     let (facts, _) = fixture();
     let mut wire = DescriptorFacts::from_facts(&facts).unwrap().unwrap();
-    wire.names.0 = vec![ExpandedName {
+    wire.names.0 = vec![Arc::new(ExpandedName {
         uri: "x".repeat(300_000),
         local: "Tiny".into(),
-    }];
+    })];
     wire.nodes.0 = (0..400)
         .map(|ordinal| {
             Node(

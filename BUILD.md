@@ -15,7 +15,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release --locked
 ```
 
-Результат: `target/release/cf-wizard-rust.exe` внутри workspace, либо каталог из `CARGO_TARGET_DIR`. Для распространения переименуйте копию в `CF-Wizard-0.8.10.exe`. HTML/CSS/JavaScript встроены в EXE. `Cargo.lock` закрепляет зависимости; `.cargo/config.toml` включает статический C runtime для Windows MSVC x64.
+Результат: `target/release/cf-wizard-rust.exe` внутри workspace, либо каталог из `CARGO_TARGET_DIR`. Для распространения переименуйте копию в `CF-Wizard-0.9.0.exe`. HTML/CSS/JavaScript встроены в EXE. `Cargo.lock` закрепляет зависимости; `.cargo/config.toml` включает статический C runtime для Windows MSVC x64.
 
 Обычная сборка и тесты не запускают Python. Сохранённые эталоны для сопоставления с Python 0.7.3 включены в `tests/fixtures`; Python-генераторы нужны только для их повторного получения.
 
@@ -60,17 +60,17 @@ cargo build --release --locked
 
 ## Обновление инструкции Word
 
-Источник текста — `docs/user-guide.md`. Актуальные реальные скриншоты — `docs/images/rust-0.8.0-rust.2`. Для подготовки Word нужен отдельный Python с `python-docx`:
+Текст берётся из `docs/user-guide.md`, снимки актуальной версии находятся в `docs/images/rust-0.9.0`. Для экспорта в Word нужен Python с `python-docx`.
 
 ```powershell
-python tools/docs/build_user_guide.py
+python tools/docs/build_user_guide.py --version 0.9.0 --output docs/CF-Wizard-0.9.0-User-Guide-RU-Illustrated.docx
 ```
 
-Результат — `docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx`. Параметры `--source`, `--output` и `--version` позволяют собрать другую редакцию без изменения генератора. Комментарий `<!-- pagebreak -->` в Markdown задаёт начало страницы в Word.
+Параметры `--source`, `--output` и `--version` задают редакцию документа. Комментарий `<!-- pagebreak -->` в Markdown задаёт начало страницы в Word. [Иллюстрированное руководство 0.8.0-rust.2](docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx) сохранено в архиве.
 
 Перед публикацией откройте Word, обновите поля и проверьте каждую страницу, таблицу и подпись. Допустим рендеринг через Word либо LibreOffice с просмотром всех страниц. Внешние ссылки в Word преобразуются в адреса GitHub, поэтому документ можно читать отдельно от репозитория.
 
-Иллюстрированный Word имеет отдельное имя: он не подменяет текстовую инструкцию и `SHA256SUMS.txt`, опубликованные в Assets тега `v0.8`.
+Используйте контрольные суммы из поставки именно того EXE, который проверяете.
 
 ## Прежняя Python-версия
 

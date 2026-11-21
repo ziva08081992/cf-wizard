@@ -361,43 +361,47 @@ fn native_check(args: &[String]) -> Result<()> {
             .ok_or_else(|| Error::Invalid(format!("Не указан {key}")))
     };
     let report = PathBuf::from(arg("--report")?);
-    let output = (|| -> Result<Value> {
-        let source = LocalSource::open(&PathBuf::from(arg("--export")?))?;
-        let selected = arg("--select")?
-            .split(',')
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>();
-        let cancel = Cancellation::default();
-        let plan = RustEngine.preview(&source, None, &selected, &BTreeSet::new(), &cancel)?;
-        let mode = crate::model::mode(&arg("--mode")?);
-        let platform = platform::validate(&PathBuf::from(arg("--platform")?), mode)?;
-        let logs = PathBuf::from(arg("--logs")?);
-        let log = Arc::new(OperationLog::create(&logs, "native-check")?);
-        let options = BuildOptions {
-            destination: PathBuf::from(arg("--destination")?),
-            label: "Rust-проверка".into(),
-            executable: platform.path,
-            mode,
-            version: platform.version,
-            stamp: chrono::Local::now().format("%Y%m%d_%H%M%S").to_string(),
-        };
-        let started = Instant::now();
-        let package = cf_application::build_package(
-            plan.as_ref(),
-            &source,
-            &BTreeSet::new(),
-            &options,
-            &cf_application::BuildServices {
-                output: &Output { log: log.clone() },
-                builder: &Native { log: log.clone() },
-                log: log.as_ref(),
-            },
-            &cancel,
-        )?;
-        Ok(
-            json!({"passed":true,"package":package,"seconds":started.elapsed().as_secs_f64(),"configuration":source.catalog().name,"journal":log.path}),
-        )
-    })();
+    let cancel = Cancellation::default();
+    let output = crate::memory_pressure::run(
+        &cancel,
+        crate::memory_pressure::Completion::PreserveResult,
+        || -> Result<Value> {
+            let source = LocalSource::open(&PathBuf::from(arg("--export")?))?;
+            let selected = arg("--select")?
+                .split(',')
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>();
+            let plan = RustEngine.preview(&source, None, &selected, &BTreeSet::new(), &cancel)?;
+            let mode = crate::model::mode(&arg("--mode")?);
+            let platform = platform::validate(&PathBuf::from(arg("--platform")?), mode)?;
+            let logs = PathBuf::from(arg("--logs")?);
+            let log = Arc::new(OperationLog::create(&logs, "native-check")?);
+            let options = BuildOptions {
+                destination: PathBuf::from(arg("--destination")?),
+                label: "Rust-проверка".into(),
+                executable: platform.path,
+                mode,
+                version: platform.version,
+                stamp: chrono::Local::now().format("%Y%m%d_%H%M%S").to_string(),
+            };
+            let started = Instant::now();
+            let package = cf_application::build_package(
+                plan.as_ref(),
+                &source,
+                &BTreeSet::new(),
+                &options,
+                &cf_application::BuildServices {
+                    output: &Output { log: log.clone() },
+                    builder: &Native { log: log.clone() },
+                    log: log.as_ref(),
+                },
+                &cancel,
+            )?;
+            Ok(
+                json!({"passed":true,"package":package,"seconds":started.elapsed().as_secs_f64(),"configuration":source.catalog().name,"journal":log.path}),
+            )
+        },
+    );
     let value = match &output {
         Ok(value) => value.clone(),
         Err(e) => json!({"passed":false,"error":e.to_string()}),

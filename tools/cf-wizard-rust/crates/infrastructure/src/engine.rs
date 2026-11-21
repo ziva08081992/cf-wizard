@@ -2,6 +2,9 @@
 #[cfg(test)]
 use crate::stubs::StubOutput;
 use cf_application::profile;
+#[path = "engine_document_cache.rs"]
+mod document_cache;
+use document_cache::{CacheBudget, Headroom};
 #[cfg(test)]
 #[path = "engine_asset_tests.rs"]
 mod asset_tests;
@@ -35,6 +38,7 @@ use crate::{
     source_reader::SourceDocument,
     source_schema::descriptor,
     stubs::StubSpec,
+    xml::XmlInput,
 };
 use cf_application::{
     Cancellation, DependencyEngine, FactStore, FrozenSourceFacts, LoadedSourceFacts,
@@ -128,7 +132,7 @@ pub(crate) struct DemandCache {
     pending_facts: BTreeMap<String, FrozenFacts>,
     document_replay: BTreeMap<String, DocumentReplay>,
     facts: BTreeMap<String, Facts>,
-    text: BTreeMap<String, String>,
+    text: BTreeMap<String, Arc<String>>,
     common: Option<CommonAttributeUsage>,
     registrars: BTreeMap<String, Vec<String>>,
     document_proof: Option<BTreeMap<String, Vec<u8>>>,
@@ -138,23 +142,31 @@ pub(crate) struct DemandCache {
 }
 #[derive(Clone)]
 pub(crate) struct Built {
-    pub source: Arc<SourceDocument>,
+    pub metadata: Arc<crate::package_compiler::DescriptorMetadata>,
+    #[cfg(test)]
+    test_source: std::sync::Weak<SourceDocument>,
     pub projection: Arc<crate::projection::DescriptorPlan>,
     pub files: Vec<String>,
 }
 impl Built {
     #[cfg(test)]
     pub fn output(&self) -> Result<StubOutput> {
-        let descriptor = self.source.view.xml.apply(
-            self.projection
-                .edits
-                .iter()
-                .map(|edit| crate::xml::Edit {
-                    range: edit.start..edit.end,
-                    replacement: edit.replacement.clone(),
-                })
-                .collect(),
-        )?;
+        let descriptor = self
+            .test_source
+            .upgrade()
+            .expect("resident test descriptor")
+            .view
+            .xml
+            .apply(
+                self.projection
+                    .edits
+                    .iter()
+                    .map(|edit| crate::xml::Edit {
+                        range: edit.start..edit.end,
+                        replacement: edit.replacement.clone(),
+                    })
+                    .collect(),
+            )?;
         Ok(StubOutput {
             descriptor,
             patterns: self.projection.patterns.clone(),
@@ -173,14 +185,44 @@ pub(crate) struct Recipe {
     pub listings: BTreeMap<String, Vec<SourceEntry>>,
     pub cache: DemandCache,
     pub excluded: BTreeSet<String>,
+    engine: RustEngine,
 }
-pub struct RustEngine;
+
+#[derive(Clone, Default)]
+pub struct RustEngine {
+    document_cache_bytes: Option<u64>,
+    headroom: Option<Headroom>,
+}
+
+// Preserve the existing unit-like default entry point for callers.
+#[allow(non_upper_case_globals)]
+pub const RustEngine: RustEngine = RustEngine {
+    document_cache_bytes: None,
+    headroom: None,
+};
+
+impl RustEngine {
+    pub fn with_document_cache_budget(bytes: Option<u64>) -> Self {
+        Self {
+            document_cache_bytes: bytes,
+            headroom: None,
+        }
+    }
+
+    pub fn with_cache_headroom(
+        mut self,
+        sample: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
+    ) -> Self {
+        self.headroom = Some(sample);
+        self
+    }
+}
+
 impl Recipe {
-    pub(crate) fn frozen_text(&self, path: &str) -> Result<&str> {
+    pub(crate) fn frozen_text(&self, path: &str) -> Result<&Arc<String>> {
         self.cache
             .text
             .get(path)
-            .map(String::as_str)
             .ok_or_else(|| Error::Invalid(format!("Не зафиксирован исходный текст {path}")))
     }
 }
@@ -199,9 +241,9 @@ impl DependencyEngine for RustEngine {
             0,
             None,
             || -> Result<Box<dyn PreparedPlan>> {
-                Ok(Box::new(prepare(
-                    source, facts, selected, excluded, cancel,
-                )?))
+                let mut query = Session::new(source, facts, selected, excluded, cancel)?;
+                query.configure(self);
+                Ok(Box::new(query.finish()?))
             },
         )
     }
@@ -260,6 +302,9 @@ pub fn records_fragment(data: &[u8]) -> &[u8] {
 }
 type CommonAttributeUsage = BTreeMap<String, (String, String, BTreeMap<String, String>)>;
 struct Session<'a> {
+    engine: RustEngine,
+    cache_budget: CacheBudget,
+    selected_objects: BTreeMap<String, cf_domain::package_plan::ObjectProjection>,
     observed_presence: BTreeMap<String, bool>,
     typed_facts: BTreeMap<String, PendingFacts>,
     document_replay: BTreeMap<String, DocumentReplay>,
@@ -279,7 +324,7 @@ struct Session<'a> {
     present: BTreeSet<String>,
     presence_pending: BTreeSet<String>,
     heap: BinaryHeap<Reverse<String>>,
-    descriptors: BTreeMap<String, String>,
+    descriptors: BTreeMap<String, Arc<String>>,
     stub_inputs: BTreeMap<String, (StubSpec, BTreeMap<String, bool>)>,
     #[cfg(test)]
     stub_builds: BTreeMap<String, usize>,
@@ -302,7 +347,7 @@ struct Session<'a> {
     requirements: crate::requirements::Requirements,
     diagnostics: BTreeSet<Diagnostic>,
     choices: BTreeSet<StructuralChoice>,
-    text_cache: BTreeMap<String, String>,
+    text_cache: BTreeMap<String, Arc<String>>,
     cached_reads: bool,
     scanned: BTreeSet<(String, String, String)>,
     source_address: String,
@@ -384,6 +429,9 @@ impl<'a> Session<'a> {
                 typed_facts: BTreeMap::new(),
                 document_replay: BTreeMap::new(),
                 source_documents: BTreeMap::new(),
+                engine: RustEngine,
+                cache_budget: CacheBudget::new(None, None),
+                selected_objects: BTreeMap::new(),
                 observed_presence: BTreeMap::new(),
                 fallback_registrars: None,
                 requirements: crate::requirements::Requirements::new(selected)?,
@@ -402,24 +450,48 @@ impl<'a> Session<'a> {
             })
         })
     }
-    fn read(&mut self, relative: &str) -> Result<String> {
-        self.read_text(relative, true)
+    fn configure(&mut self, engine: &RustEngine) {
+        self.engine = engine.clone();
+        self.cache_budget = CacheBudget::new(engine.document_cache_bytes, engine.headroom.clone());
     }
-    fn read_text(&mut self, relative: &str, retain: bool) -> Result<String> {
+    fn read(&mut self, relative: &str) -> Result<Arc<String>> {
         profile::measure("engine.read_text", "engine", 0, Some(relative), || {
             if self.cached_reads
                 && let Some(text) = self.text_cache.get(relative)
             {
-                return Ok(text.clone());
+                return Ok(Arc::clone(text));
             }
-            let data = self.source.read(relative, self.cancel)?;
-            self.record_hash(relative, &data)?;
-            let text = String::from_utf8(data).map_err(crate::external)?;
-            if retain {
-                self.text_cache.insert(relative.into(), text.clone());
+            let text = self.read_source_text(relative)?;
+            // Live inputs still undergo the original reread and hash check.
+            if let Some(previous) = self.text_cache.get(relative)
+                && previous.as_str() == text
+            {
+                return Ok(Arc::clone(previous));
             }
+            let text = Arc::new(text);
+            self.text_cache.insert(relative.into(), Arc::clone(&text));
             Ok(text)
         })
+    }
+    fn read_transient<T>(
+        &mut self,
+        relative: &str,
+        inspect: impl FnOnce(&str) -> Result<T>,
+    ) -> Result<T> {
+        profile::measure("engine.read_text", "engine", 0, Some(relative), || {
+            if self.cached_reads
+                && let Some(text) = self.text_cache.get(relative)
+            {
+                return inspect(text);
+            }
+            let text = self.read_source_text(relative)?;
+            inspect(&text)
+        })
+    }
+    fn read_source_text(&mut self, relative: &str) -> Result<String> {
+        let data = self.source.read(relative, self.cancel)?;
+        self.record_hash(relative, &data)?;
+        String::from_utf8(data).map_err(crate::external)
     }
     fn record_hash(&mut self, relative: &str, data: &[u8]) -> Result<()> {
         profile::measure(
@@ -439,13 +511,13 @@ impl<'a> Session<'a> {
             },
         )
     }
-    fn descriptor(&mut self, key: &str) -> Result<String> {
+    fn descriptor(&mut self, key: &str) -> Result<Arc<String>> {
         if let Some(text) = self.descriptors.get(key) {
-            return Ok(text.clone());
+            return Ok(Arc::clone(text));
         }
         let rel = descriptor(key).ok_or_else(|| Error::Invalid(format!("Нет папки для {key}")))?;
         let text = self.read(&rel)?;
-        self.descriptors.insert(key.into(), text.clone());
+        self.descriptors.insert(key.into(), Arc::clone(&text));
         Ok(text)
     }
     fn exists(&self, key: &str) -> Result<bool> {
@@ -508,8 +580,13 @@ impl<'a> Session<'a> {
                         );
                         loaded.facts.structural_facts()
                     })?;
-                self.typed_facts
-                    .insert(key.into(), PendingFacts::Loaded(Box::new(loaded)));
+                let pending = PendingFacts::Loaded(Box::new(loaded));
+                let pending = if self.engine.document_cache_bytes.is_some() {
+                    PendingFacts::Frozen(pending.freeze())
+                } else {
+                    pending
+                };
+                self.typed_facts.insert(key.into(), pending);
                 self.facts.insert(key.into(), structural.clone());
                 return Ok(structural);
             }
@@ -531,16 +608,19 @@ impl<'a> Session<'a> {
                 snapshot: self.proof.clone(),
                 inputs: BTreeMap::new(),
             };
+            self.cache_budget
+                .preflight(text.len(), &mut self.source_documents);
             let document = if let Some(replay) = self.document_replay.get(key).cloned() {
+                self.cache_budget.replays += 1;
                 // A materialized document takes precedence over any later structural load.
                 match replay {
                     DocumentReplay::Xml => {
-                        SourceDocument::descriptor(key, &path, text.as_bytes(), proof)?
+                        SourceDocument::descriptor_input(key, &path, XmlInput::Shared(text), proof)?
                     }
-                    DocumentReplay::Facts(facts) => SourceDocument::cached(
+                    DocumentReplay::Facts(facts) => SourceDocument::cached_input(
                         key,
                         &path,
-                        text.as_bytes(),
+                        XmlInput::Shared(text),
                         proof,
                         facts.into_facts()?,
                     )?,
@@ -569,12 +649,23 @@ impl<'a> Session<'a> {
                             None => FrozenFacts::Typed(Arc::new(facts.clone())),
                         };
                         (
-                            SourceDocument::cached(key, &path, text.as_bytes(), proof, facts)?,
+                            SourceDocument::cached_input(
+                                key,
+                                &path,
+                                XmlInput::Shared(text),
+                                proof,
+                                facts,
+                            )?,
                             DocumentReplay::Facts(replay),
                         )
                     }
                     None => (
-                        SourceDocument::descriptor(key, &path, text.as_bytes(), proof)?,
+                        SourceDocument::descriptor_input(
+                            key,
+                            &path,
+                            XmlInput::Shared(text),
+                            proof,
+                        )?,
                         DocumentReplay::Xml,
                     ),
                 };
@@ -582,8 +673,14 @@ impl<'a> Session<'a> {
                 document
             };
             let document = Arc::new(document);
-            self.source_documents
-                .insert(key.into(), Arc::clone(&document));
+            if self.selected.contains(key) && !self.selected_objects.contains_key(key) {
+                self.selected_objects.insert(
+                    key.into(),
+                    crate::package_compiler::selected_projection(&document, &path),
+                );
+            }
+            self.cache_budget
+                .insert(key, &document, &mut self.source_documents);
             Ok(document)
         })
     }
@@ -959,8 +1056,9 @@ impl<'a> Session<'a> {
             let mut proof = BTreeMap::new();
             for entry in self.list("Documents")? {
                 // Keep compact links and extraction proof, not unrelated raw XML.
-                let text = self.read_text(&format!("Documents/{}", entry.name), false)?;
-                let facts = crate::registrar_facts::extract(text.as_bytes())?;
+                let facts = self.read_transient(&format!("Documents/{}", entry.name), |text| {
+                    crate::registrar_facts::extract(text.as_bytes())
+                })?;
                 proof.insert(entry.name.clone(), facts.hash);
                 self.registrar_rows.push((
                     entry.name,
@@ -1230,16 +1328,10 @@ impl<'a> Session<'a> {
                         let text = self.read(relative)?;
                         profile::note("scan.bsl_bytes", "engine.scan", text.len());
                         let values = module_values(&text);
-                        let code = if values.is_empty() {
-                            text.clone()
-                        } else {
-                            without_bsl_comments(&text)
-                        };
-                        let actual = if code != text {
-                            Some(module_values(&code).into_iter().collect::<BTreeSet<_>>())
-                        } else {
-                            None
-                        };
+                        let actual = (!values.is_empty())
+                            .then(|| without_bsl_comments(&text))
+                            .filter(|code| code.as_str() != text.as_str())
+                            .map(|code| module_values(&code).into_iter().collect::<BTreeSet<_>>());
                         for (key, path) in values {
                             self.comment = actual
                                 .as_ref()
@@ -1287,9 +1379,7 @@ impl<'a> Session<'a> {
                     let mut form_paths = None;
                     if first {
                         if descriptor(owner).as_deref() == Some(relative) {
-                            self.descriptors
-                                .entry(owner.into())
-                                .or_insert_with(|| text.clone());
+                            self.descriptors.entry(owner.into()).or_insert(text);
                             let document = self.document(owner)?;
                             for reference in &document.facts.references {
                                 self.source_reference(reference, owner)?;
@@ -1300,8 +1390,12 @@ impl<'a> Session<'a> {
                                 snapshot: self.proof.clone(),
                                 inputs: BTreeMap::new(),
                             };
-                            let document =
-                                SourceDocument::sidecar(owner, relative, text.as_bytes(), proof)?;
+                            let document = SourceDocument::sidecar_input(
+                                owner,
+                                relative,
+                                XmlInput::Shared(text),
+                                proof,
+                            )?;
                             if relative.rsplit('/').next() == Some("Form.xml") {
                                 let form = crate::source_forms::read(&document)?;
                                 for reference in &form.references {
@@ -1427,7 +1521,6 @@ impl<'a> Session<'a> {
                     continue;
                 }
                 let spec = self.states[&key].spec.clone();
-                let source = self.document(&key)?;
                 let reusable = self
                     .stub_inputs
                     .get(&key)
@@ -1437,9 +1530,11 @@ impl<'a> Session<'a> {
                                 .iter()
                                 .all(|(target, value)| present.contains(target) == *value)
                     });
-                let projection = if reusable {
-                    Arc::clone(&self.built[&key].projection)
+                let (projection, metadata) = if reusable {
+                    let built = &self.built[&key];
+                    (Arc::clone(&built.projection), Arc::clone(&built.metadata))
                 } else {
+                    let source = self.document(&key)?;
                     #[cfg(test)]
                     {
                         *self.stub_builds.entry(key.clone()).or_default() += 1;
@@ -1454,7 +1549,11 @@ impl<'a> Session<'a> {
                     }
                     self.stub_inputs
                         .insert(key.clone(), (spec, projection.observations.clone()));
-                    projection
+                    let metadata = Arc::new(crate::package_compiler::DescriptorMetadata::capture(
+                        &source,
+                        &projection.retained,
+                    ));
+                    (projection, metadata)
                 };
                 let descriptor_path = descriptor(&key).expect("metadata key");
                 let base = format!("{}/", descriptor_path.trim_end_matches(".xml"));
@@ -1482,7 +1581,13 @@ impl<'a> Session<'a> {
                 self.built.insert(
                     key.clone(),
                     Built {
-                        source,
+                        metadata,
+                        #[cfg(test)]
+                        test_source: self
+                            .source_documents
+                            .get(&key)
+                            .map(Arc::downgrade)
+                            .unwrap_or_default(),
                         projection: Arc::clone(&projection),
                         files: files.clone(),
                     },
@@ -1541,12 +1646,14 @@ impl<'a> Session<'a> {
             let mut merge_rules = BTreeMap::new();
             let owners: Vec<_> = self.built.keys().cloned().collect();
             let mut inventories = BTreeMap::new();
-            for (ordinal, (key, built)) in self.built.clone().into_iter().enumerate() {
-                if ordinal % cf_application::INVENTORY_WINDOW_LIMIT == 0
+            let window = self.cache_budget.inventory_window();
+            for (ordinal, key) in owners.iter().cloned().enumerate() {
+                let projection = Arc::clone(&self.built[&key].projection);
+                if ordinal % window == 0
                     && self.source.is_pinned()
                     && self.source.manifest().is_some()
                 {
-                    let end = (ordinal + cf_application::INVENTORY_WINDOW_LIMIT).min(owners.len());
+                    let end = (ordinal + window).min(owners.len());
                     let pending: Vec<_> = owners[ordinal..end]
                         .iter()
                         .filter(|owner| !self.below.contains_key(*owner))
@@ -1602,16 +1709,15 @@ impl<'a> Session<'a> {
                     }
                 }
                 if kind == "FunctionalOption" {
-                    let source_content = built
-                        .source
+                    let document = self.document(&key)?;
+                    let source_content = document
                         .view
-                        .child(built.source.object, "Properties")
-                        .and_then(|p| built.source.view.child(p, "Content"))
-                        .map(|node| crate::projection::semantic_value(&built.source.view, node))
+                        .child(document.object, "Properties")
+                        .and_then(|p| document.view.child(p, "Content"))
+                        .map(|node| crate::projection::semantic_value(&document.view, node))
                         .transpose()?;
                     let expected_content =
-                        crate::projection::top_property(&built.projection.expected, "Content")
-                            .cloned();
+                        crate::projection::top_property(&projection.expected, "Content").cloned();
                     if source_content != expected_content {
                         protected.push("Content".into());
                     }
@@ -1619,7 +1725,7 @@ impl<'a> Session<'a> {
                 if !protected.is_empty() {
                     merge_rules.insert(key.clone(), protected);
                 }
-                for pattern in &built.projection.patterns {
+                for pattern in &projection.patterns {
                     let command_path = format!("{base}{pattern}Ext/CommandModule.bsl");
                     let form_path = format!(
                         "{base}{}/Ext/Form/Module.bsl",
@@ -1808,13 +1914,32 @@ impl<'a> Session<'a> {
                 listings: self.listings,
                 cache,
                 excluded: self.excluded,
+                engine: self.engine,
             };
+            if recipe.engine.document_cache_bytes.is_some() {
+                self.source_documents.clear();
+                profile::note(
+                    "engine.cache.evictions",
+                    "engine.finish",
+                    self.cache_budget.evictions,
+                );
+                profile::note(
+                    "engine.cache.replays",
+                    "engine.finish",
+                    self.cache_budget.replays,
+                );
+                profile::note(
+                    "engine.cache.high_water_estimated_bytes",
+                    "engine.finish",
+                    self.cache_budget.high_water as usize,
+                );
+            }
             if recipe.composition.diagnostics.is_empty() {
                 recipe.compiled = Some(Arc::new(crate::package_compiler::compile(
                     &recipe,
                     source,
                     &self.built,
-                    &self.source_documents,
+                    self.selected_objects,
                 )?));
             }
             cf_application::memory_trace::current("preview_compiled");
@@ -1934,15 +2059,17 @@ impl<'a> Session<'a> {
                 if !present {
                     return Ok(false);
                 }
-                let value = self.read_text(path, false)?;
-                Ok(!value
-                    .trim_start_matches('\u{feff}')
-                    .trim_matches([' ', '\t', '\r', '\n', '\x0b', '\x0c'])
-                    .is_empty())
+                self.read_transient(path, |value| {
+                    Ok(!value
+                        .trim_start_matches('\u{feff}')
+                        .trim_matches([' ', '\t', '\r', '\n', '\x0b', '\x0c'])
+                        .is_empty())
+                })
             },
         )
     }
 }
+#[cfg(test)]
 pub(crate) fn prepare(
     source: &dyn MetadataSource,
     index: Option<&dyn FactStore>,
@@ -1965,6 +2092,7 @@ pub(crate) fn reprepare(
         excluded,
         cancel,
     )?;
+    query.configure(&previous.engine);
     query.facts = previous.cache.facts.clone();
     query.typed_facts = previous
         .cache

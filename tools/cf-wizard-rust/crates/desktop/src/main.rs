@@ -1,7 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod close_probe;
 mod host;
+mod memory_pressure;
 mod model;
+mod preview_eta;
 mod profile;
 mod shutdown;
 fn main() {

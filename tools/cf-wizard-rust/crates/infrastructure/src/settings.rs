@@ -17,6 +17,7 @@ pub struct Settings {
     pub index_directories: BTreeMap<String, String>,
     pub build_mode: String,
     pub source_mode: String,
+    pub memory_budget_mib: Option<u32>,
     pub git_settings: Connection,
 }
 impl Default for Settings {
@@ -27,6 +28,7 @@ impl Default for Settings {
             index_directories: BTreeMap::new(),
             build_mode: "auto".into(),
             source_mode: "local".into(),
+            memory_budget_mib: None,
             git_settings: Connection::default(),
         }
     }
@@ -77,6 +79,10 @@ impl Settings {
             values: strings(&v["values"], Some(keys)),
             last_dirs: strings(&v["last_dirs"], Some(keys)),
             index_directories: strings(&v["index_directories"], None),
+            memory_budget_mib: v["memory_budget_mib"]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|&value| value > 0),
             ..Self::default()
         };
         if let Some(m) = v["build_mode"]
@@ -138,6 +144,20 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn memory_budget_roundtrips_and_legacy_settings_use_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paths.json");
+        fs::write(&path, br#"{"memory_budget_mib":0}"#).unwrap();
+        assert_eq!(Settings::load(&path).memory_budget_mib, None);
+        let settings = Settings {
+            memory_budget_mib: Some(4096),
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).memory_budget_mib, Some(4096));
+    }
+
     #[test]
     fn old_settings_are_whitelisted() {
         let dir = tempfile::tempdir().unwrap();
