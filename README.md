@@ -4,7 +4,7 @@
 
 Мастер принимает XML-выгрузку из локальной папки или ветки **Gitea / GitHub**. Вы выбираете нужные объекты, проверяете подобранные зависимости и получаете комплект: файл `.cf` и `.merge-settings.xml` с настройками объединения.
 
-**Версия этих исходников — 0.8.9 · Windows x64.** Мастер освобождает рабочие документы после предпросмотра, использует компактный индекс SourceFacts и сохраняет деревья Git в SQLite. [Изменения и результаты замеров](docs/releases/v0.8.9.md).
+**Версия этих исходников — 0.8.10 · Windows x64.** В Windows обновилось оформление мастера, а диалог выбора папки индексов открывается поверх его окна. [Что изменилось в 0.8.10](docs/releases/v0.8.10.md).
 
 ## Скачать и начать работу
 
@@ -52,7 +52,7 @@
 | --- | --- |
 | Пользователь | [Пошаговое руководство](docs/user-guide.md), [Word со скриншотами](docs/CF-Wizard-0.8.0-rust.2-User-Guide-RU-Illustrated.docx?raw=1) |
 | Разработчик | [Сборка и проверки](BUILD.md), [Rust workspace](tools/cf-wizard-rust/README.md) |
-| Ревьюер | [Проверки и ограничения 0.8.9](docs/releases/v0.8.9.md#проверки-и-ограничения), [профиль прикладного ядра](docs/architecture/owned-source-profile.md), [методика измерений](docs/architecture/package-preparation-benchmark-0.8.7.md) |
+| Ревьюер | [Проверки и ограничения 0.8.10](docs/releases/v0.8.10.md#проверки-и-ограничения), [результаты замеров 0.8.9](docs/releases/v0.8.9.md), [профиль прикладного ядра](docs/architecture/owned-source-profile.md), [методика измерений](docs/architecture/package-preparation-benchmark-0.8.7.md) |
 
 Рабочая версия находится в `tools/cf-wizard-rust`: слои `domain`, `application`, `infrastructure`, `desktop`. Файлы в `tools/1c-delivery` относятся к прежней Python-версии.
 

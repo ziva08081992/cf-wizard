@@ -85,6 +85,7 @@ impl Retained {
 }
 
 pub struct Model {
+    pub(crate) file_dialog: rfd::FileDialog,
     pub preferences: Settings,
     pub settings_path: PathBuf,
     pub values: BTreeMap<String, String>,
@@ -167,6 +168,7 @@ impl Model {
             preferences.git_settings.cache = app_base.join("git-cache").to_string_lossy().into();
         }
         Self {
+            file_dialog: rfd::FileDialog::new(),
             preferences,
             settings_path: path,
             values,
@@ -808,71 +810,76 @@ let index_started=Instant::now();
                 .unwrap_or_else(settings::base);
         }
         while !initial.is_dir() && initial.pop() {}
-        self.start(
-            "Выберите путь…",
-            callback,
-            None,
-            move |_, _| {
-                let dialog = rfd::FileDialog::new().set_directory(initial);
-                let chosen = match file {
-                    Some("Configuration.xml") => {
-                        dialog.add_filter("Configuration.xml", &["xml"]).pick_file()
-                    }
-                    Some(_) => dialog
-                        .add_filter("Программа платформы", &["exe"])
-                        .pick_file(),
-                    None => dialog.pick_folder(),
-                };
-                let platform = chosen
-                    .as_ref()
-                    .filter(|_| key == "platform" || key == "designer")
-                    .map(|p| {
-                        platform::validate(
-                            p,
-                            if key == "platform" {
-                                BuildMode::Ibcmd
-                            } else {
-                                BuildMode::Designer
-                            },
-                        )
-                    })
-                    .transpose()?;
-                Ok(Box::new(move |m| {
-                    if let Some(path) = chosen {
-                        m.values.insert(key.clone(), path.to_string_lossy().into());
-                        let last = if file.is_some() {
-                            path.parent().unwrap_or(&path)
+        let mut dialog = self.file_dialog.clone().set_directory(initial);
+        let caption = match (key.as_str(), file) {
+            ("index_directory", _) => {
+                dialog = dialog.set_title("Выбор папки индексов SQLite");
+                "Выберите папку в системном окне"
+            }
+            (_, None) => "Выберите папку в системном окне",
+            (_, Some(_)) => "Выберите файл в системном окне",
+        };
+        let previous_status = (self.status.clone(), self.status_kind.clone());
+        self.start(caption, callback, None, move |_, _| {
+            let chosen = match file {
+                Some("Configuration.xml") => {
+                    dialog.add_filter("Configuration.xml", &["xml"]).pick_file()
+                }
+                Some(_) => dialog
+                    .add_filter("Программа платформы", &["exe"])
+                    .pick_file(),
+                None => dialog.pick_folder(),
+            };
+            let platform = chosen
+                .as_ref()
+                .filter(|_| key == "platform" || key == "designer")
+                .map(|p| {
+                    platform::validate(
+                        p,
+                        if key == "platform" {
+                            BuildMode::Ibcmd
                         } else {
-                            &path
-                        };
-                        m.preferences
-                            .last_dirs
-                            .insert(key.clone(), last.to_string_lossy().into());
-                        m.save_soon();
-                        if let Some(p) = platform {
-                            m.platforms.push(p);
-                        }
-                        if key == "logs" {
-                            journal::set_crash_folder(Path::new(&m.values["logs"]));
-                        }
-                        if key == "export" {
-                            let _ = m.open(None);
-                        } else if key == "index_directory"
-                            && let Some(s) = &m.source
-                        {
-                            let identity = s
-                                .manifest()
-                                .map_or(s.identity(), |v| v.source_key.as_str())
-                                .to_owned();
-                            m.preferences
-                                .index_directories
-                                .insert(identity, path.to_string_lossy().into());
-                            m.check_index();
-                        }
+                            BuildMode::Designer
+                        },
+                    )
+                })
+                .transpose()?;
+            Ok(Box::new(move |m| {
+                (m.status, m.status_kind) = previous_status;
+                if let Some(path) = chosen {
+                    m.values.insert(key.clone(), path.to_string_lossy().into());
+                    let last = if file.is_some() {
+                        path.parent().unwrap_or(&path)
+                    } else {
+                        &path
+                    };
+                    m.preferences
+                        .last_dirs
+                        .insert(key.clone(), last.to_string_lossy().into());
+                    m.save_soon();
+                    if let Some(p) = platform {
+                        m.platforms.push(p);
                     }
-                }))
-            },
-        )
+                    if key == "logs" {
+                        journal::set_crash_folder(Path::new(&m.values["logs"]));
+                    }
+                    if key == "export" {
+                        let _ = m.open(None);
+                    } else if key == "index_directory"
+                        && let Some(s) = &m.source
+                    {
+                        let identity = s
+                            .manifest()
+                            .map_or(s.identity(), |v| v.source_key.as_str())
+                            .to_owned();
+                        m.preferences
+                            .index_directories
+                            .insert(identity, path.to_string_lossy().into());
+                        m.check_index();
+                    }
+                }
+            }))
+        })
     }
     fn check_index(&mut self) {
         let Some(source) = self.source.clone() else {
