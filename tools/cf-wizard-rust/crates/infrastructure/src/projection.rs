@@ -241,6 +241,29 @@ pub(crate) fn compile(
                             decisions.insert(property, Decision::Empty);
                         }
                     }
+                    // The Owner standard attribute exists only with its owner list.
+                    // Keep the whole list so retained references require every owner.
+                    if kind == "Catalog"
+                        && let Some(owners) = view.child(properties, "Owners")
+                        && let Some(lock_fields) = view.child(properties, "DataLockFields")
+                        && !decisions.contains_key(&lock_fields)
+                    {
+                        let owner_field = format!("{key}.StandardAttribute.Owner");
+                        for &field in &view.xml.elements[lock_fields].children {
+                            let name = &view.names[field];
+                            if name.local == "Field"
+                                && matches!(name.uri.as_str(), READABLE | "")
+                                && !decisions.contains_key(&field)
+                                && view.xml.text(field)?.trim() == owner_field
+                            {
+                                decisions.remove(&owners);
+                                for item in &view.xml.elements[owners].children {
+                                    decisions.remove(item);
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
                 if let Some(children) = view.child(document.object, "ChildObjects") {
                     for &child in &view.xml.elements[children].children {
