@@ -63,7 +63,6 @@
 - **[Lucide](https://lucide.dev/)** — пиктограммы интерфейса; сведения об авторах и лицензии сохранены в [NOTICE](NOTICE).
 - **[SQLite](https://www.sqlite.org/)** — встроенная база для постоянного индекса зависимостей. Условия SQLite и Rust-обёрток описаны в [LICENSING.md](LICENSING.md#сторонние-компоненты).
 - **[wry](https://github.com/tauri-apps/wry), [tao](https://github.com/tauri-apps/tao) и [webview2-rs](https://github.com/wravery/webview2-rs)** — WebView, оконная оболочка и Rust-привязки WebView2.
-- **[itrous / bsl-analyzer](https://github.com/itrous/bsl-analyzer)** — пример оформления благодарностей и разделения сведений о лицензии, происхождении и сторонних компонентах.
 
 ## Лицензия
 
