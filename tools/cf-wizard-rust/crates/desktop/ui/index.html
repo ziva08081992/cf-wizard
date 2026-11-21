@@ -147,7 +147,10 @@
 
     <footer class="cf-footer">
       <div class="cf-footer-actions">
-        <button type="button" class="cf-button" data-action="preview" disabled title="Показать объекты и причины включения заглушек"><i data-lucide="list-checks" aria-hidden="true"></i>Предпросмотр</button>
+        <div class="cf-preview-action">
+          <button type="button" class="cf-button" data-action="preview" aria-describedby="cf-preview-estimate" disabled title="Показать объекты и причины включения заглушек"><i data-lucide="list-checks" aria-hidden="true"></i>Предпросмотр</button>
+          <span id="cf-preview-estimate" class="cf-secondary" hidden></span>
+        </div>
         <input id="cf-task" type="text" aria-label="Номер задачи или комментарий" placeholder="Номер задачи или комментарий" title="Необязательное поле для имени папки комплекта" spellcheck="false">
         <button type="button" class="cf-button cf-primary" data-action="build" disabled title="Собрать CF и сверить её обратной выгрузкой"><i data-lucide="package-check" aria-hidden="true"></i>Собрать CF</button>
         <button type="button" class="cf-button cf-quiet" data-action="package" disabled><i data-lucide="folder-open" aria-hidden="true"></i>Открыть комплект</button>
@@ -227,6 +230,17 @@
             </div>
           </div>
         </section>
+        <section class="cf-preferences-section" aria-label="Память">
+          <h3>Память</h3>
+          <div class="cf-field">
+            <label for="cf-memory-budget">Рабочий бюджет мастера, МиБ</label>
+            <input id="cf-memory-budget" type="text" inputmode="numeric" maxlength="10" placeholder="Авто"
+                   aria-describedby="cf-memory-budget-help cf-memory-available cf-memory-budget-warning">
+            <small id="cf-memory-budget-help" class="cf-secondary">Пустое поле включает автоматический режим. При меньшем бюджете мастер чаще перечитывает данные.</small>
+            <small id="cf-memory-available" class="cf-secondary" hidden></small>
+            <small id="cf-memory-budget-warning" role="status" hidden>Бюджет составляет 40% или больше от доступной сейчас памяти.</small>
+          </div>
+        </section>
         <section class="cf-preferences-section cf-gitea-settings" aria-label="Подключение Git">
           <div><h3>Git</h3><span class="cf-secondary" id="cf-git-location"></span></div>
           <button type="button" class="cf-button" data-action="git-connect"><i data-lucide="workflow" aria-hidden="true"></i>Подключение Git…</button>
@@ -239,7 +253,12 @@
     <form method="dialog" class="cf-dialog-body">
       <h2 id="cf-dialog-title"></h2>
       <p data-dialog-text></p>
-      <p data-dialog-links hidden><a data-link="repository" href="#">Проект alonehobo</a> · <a data-link="licenses" href="#">Wry / WebView2</a> · <a data-link="icons" href="#">Лицензия значков</a></p>
+      <p data-dialog-links hidden>
+        <a data-link="repository" href="#">Репозиторий CF Wizard</a> ·
+        <a data-link="upstream" href="#">Проект alonehobo</a> ·
+        <a data-link="licenses" href="#">Wry / WebView2</a> ·
+        <a data-link="icons" href="#">Лицензия значков</a>
+      </p>
       <div class="cf-dialog-actions">
         <button type="submit" class="cf-button">Закрыть</button>
       </div>
@@ -256,6 +275,7 @@
   <dialog class="cf-dialog cf-help" aria-labelledby="cf-help-title">
     <form method="dialog" class="cf-dialog-body">
       <h2 id="cf-help-title">Как собрать техническую CF</h2>
+      <p>Рабочий бюджет можно задать в разделе «Настройки → Память». Здесь мастер показывает доступную память и предупреждает, если бюджет составляет 40% этого объёма или больше. Предпросмотр освобождает разобранные документы и перечитывает их по мере необходимости. При критической нехватке памяти мастер штатно останавливает операцию. Оценка времени появляется после двух сопоставимых предпросмотров.</p>
       <ol>
         <li>Мастер открывает сохранённую выгрузку при запуске. Путь к локальной папке или <code>Configuration.xml</code> можно выбрать в <strong>Настройках</strong>. Для открытия по введённому пути нажмите <strong>Открыть выгрузку</strong>.</li>
         <li>Для Gitea или GitHub выберите <strong>Git</strong>. В окне <strong>Настройки → Подключение Git</strong> выберите API сервиса и введите персональный токен на чтение. Для GitHub.com используйте PAT только нужного репозитория с Contents: Read-only. Выберите ветку и откройте её. Мастер принимает XML-выгрузку основной конфигурации для сборки CF.</li>

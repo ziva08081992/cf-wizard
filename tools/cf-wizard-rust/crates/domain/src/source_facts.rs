@@ -2,7 +2,10 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// Payload shape, extraction semantics and consuming rules have distinct owners.
 pub const FACT_SCHEMA: u32 = 2;
@@ -72,14 +75,15 @@ pub struct ExpandedName {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct NodeStep {
-    pub name: ExpandedName,
+    /// Ancestor steps in descendant origins share immutable XML names.
+    pub name: Arc<ExpandedName>,
     /// Position among siblings with the same expanded name, not a global index.
     pub ordinal: usize,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Origin {
-    pub path: String,
-    pub sha256: String,
+    pub path: Arc<str>,
+    pub sha256: Arc<str>,
     pub node: Vec<NodeStep>,
     /// UTF-8 byte positions are valid only for the proved file bytes.
     pub span: Option<(usize, usize)>,
@@ -139,11 +143,11 @@ pub enum FragmentKind {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceFragment {
-    pub id: String,
-    pub owner: String,
-    pub parent: Option<String>,
+    pub id: Arc<str>,
+    pub owner: Arc<str>,
+    pub parent: Option<Arc<str>>,
     pub kind: FragmentKind,
-    pub tag: ExpandedName,
+    pub tag: Arc<ExpandedName>,
     pub name: String,
     pub ordinal: usize,
     pub uuid: Option<String>,
@@ -193,7 +197,7 @@ pub enum ReferenceSurface {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ReferenceFact {
-    pub fragment: String,
+    pub fragment: Arc<str>,
     pub surface: ReferenceSurface,
     pub target: ReferenceTarget,
     pub strength: ReferenceStrength,
@@ -210,7 +214,7 @@ pub enum Coverage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoverageNote {
     pub facet: Facet,
-    pub fragment: String,
+    pub fragment: Arc<str>,
     pub coverage: Coverage,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -218,7 +222,7 @@ pub struct SourceFacts {
     pub object: String,
     pub versions: FactVersions,
     pub proof: SourceProof,
-    pub fragments: BTreeMap<String, SourceFragment>,
+    pub fragments: BTreeMap<Arc<str>, SourceFragment>,
     pub references: Vec<ReferenceFact>,
     pub coverage: BTreeMap<Facet, Coverage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -229,7 +233,7 @@ impl SourceFacts {
     pub fn validate(&self) -> Result<()> {
         let mut parents_are_shorter = true;
         for (id, fragment) in &self.fragments {
-            if id != &fragment.id || fragment.owner != self.object {
+            if id != &fragment.id || fragment.owner.as_ref() != self.object {
                 return Err(Error::Invalid(
                     "Некорректный владелец или адрес SourceFacts".into(),
                 ));
@@ -243,8 +247,8 @@ impl SourceFacts {
                 parents_are_shorter &= parent.len() < id.len();
             }
             if !matches!(
-                self.proof.inputs.get(&fragment.origin.path),
-                Some(InputObservation::Content { sha256 }) if sha256 == &fragment.origin.sha256
+                self.proof.inputs.get(fragment.origin.path.as_ref()),
+                Some(InputObservation::Content { sha256 }) if sha256 == fragment.origin.sha256.as_ref()
             ) || fragment.origin.span.is_some_and(|(start, end)| start > end)
             {
                 return Err(Error::Invalid(format!(
@@ -274,7 +278,7 @@ impl SourceFacts {
         }
         // A node already reached by another completed walk has an acyclic parent chain.
         let mut visited = BTreeMap::new();
-        for id in self.fragments.keys().map(String::as_str) {
+        for id in self.fragments.keys().map(AsRef::as_ref) {
             let mut cursor = Some(id);
             while let Some(node) = cursor {
                 use std::collections::btree_map::Entry;
@@ -308,7 +312,7 @@ impl SourceFacts {
             if matches!(reference.surface, ReferenceSurface::ContextualAttribute(_)) {
                 continue;
             }
-            let mut cursor = Some(reference.fragment.as_str());
+            let mut cursor = Some(reference.fragment.as_ref());
             while let Some(id) = cursor {
                 let fragment = &self.fragments[id];
                 if fragment.kind == FragmentKind::Property && fragment.tag.local == "Type" {
@@ -365,7 +369,7 @@ impl SourceFacts {
                 let member = crate::Member {
                     name: field.name.clone(),
                     tag: field.tag.local.clone(),
-                    types: targets.get(field.id.as_str()).cloned().unwrap_or_default(),
+                    types: targets.get(field.id.as_ref()).cloned().unwrap_or_default(),
                     columns: members(&field.id, children, targets),
                 };
                 if let Some(&position) = positions.get(&field.name) {
@@ -378,7 +382,7 @@ impl SourceFacts {
             result
         }
         Ok(crate::Facts {
-            targets: targets.get(object.id.as_str()).cloned().unwrap_or_default(),
+            targets: targets.get(object.id.as_ref()).cloned().unwrap_or_default(),
             members: members(&object.id, &children, &targets),
         })
     }

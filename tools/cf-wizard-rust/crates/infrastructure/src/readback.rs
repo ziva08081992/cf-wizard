@@ -3,11 +3,11 @@ use crate::{
     assets::{SHEET, UI, XSI, picture_properties},
     kinds::{REQUIRED_LISTS, REQUIRED_PROPERTIES, TYPE_FOLDERS},
     reference_lexer::references as scan,
-    xml::{Xml, unescape},
+    xml::{Xml, XmlInput, unescape},
 };
 use cf_domain::{Error, ObjectKey, Result};
-use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use serde_json::{Map, Value, json};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 fn expanded(name: &str, scope: &BTreeMap<String, String>, attribute: bool) -> Result<String> {
     if let Some((p, n)) = name.split_once(':') {
@@ -50,11 +50,16 @@ fn qvalue(
 }
 /// Match ElementTree expanded names, QName values and inherited xml:space.
 pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(crate::external)?
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    let x = crate::source_xml::SourceXml::parse(text.as_bytes())?.xml;
+    let mut rest = std::str::from_utf8(bytes).map_err(crate::external)?;
+    let mut normalized = String::with_capacity(rest.len());
+    while let Some((line, suffix)) = rest.split_once('\r') {
+        normalized.push_str(line);
+        normalized.push('\n');
+        rest = suffix.strip_prefix('\n').unwrap_or(suffix);
+    }
+    normalized.push_str(rest);
+    let input = XmlInput::Shared(Arc::new(normalized));
+    let x = crate::source_xml::SourceXml::parse_input(input)?.xml;
     fn node(
         x: &Xml,
         id: usize,
@@ -62,12 +67,12 @@ pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
         inherited: bool,
     ) -> Result<Value> {
         let e = &x.elements[id];
-        let mut scope = parent.clone();
+        let mut scope = Cow::Borrowed(parent);
         for a in &e.attributes {
             if a.name == "xmlns" {
-                scope.insert("".into(), a.value.clone());
+                scope.to_mut().insert("".into(), a.value.clone());
             } else if let Some(p) = a.name.strip_prefix("xmlns:") {
-                scope.insert(p.into(), a.value.clone());
+                scope.to_mut().insert(p.into(), a.value.clone());
             }
         }
         let preserve = e
@@ -94,12 +99,16 @@ pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
                 && qvalue(&a.value, &scope, true, true)
                     == json!(["qname", "http://www.w3.org/2001/XMLSchema", "QName"])
         });
-        let mut attrs = BTreeMap::new();
+        let mut attrs = Map::new();
         for a in &e.attributes {
             if a.name == "xmlns" || a.name.starts_with("xmlns:") {
                 continue;
             }
-            let value = unescape(&a.raw.replace(['\t', '\n', '\r'], " "))?;
+            let value = if a.raw.contains(['\t', '\n', '\r']) {
+                Cow::Owned(unescape(&a.raw.replace(['\t', '\n', '\r'], " "))?)
+            } else {
+                Cow::Borrowed(a.value.as_str())
+            };
             attrs.insert(
                 expanded(&a.name, &scope, true)?,
                 qvalue(
@@ -117,7 +126,11 @@ pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
                 let (r, cdata) = text_ranges.next().expect("peeked text");
                 if r.start >= start {
                     let t = &x.source[r.clone()];
-                    value.push_str(&if *cdata { t.into() } else { unescape(t)? });
+                    if *cdata || !t.contains('&') {
+                        value.push_str(t);
+                    } else {
+                        value.push_str(&unescape(t)?);
+                    }
                 }
             }
             let known_type = typed_qname
@@ -131,7 +144,7 @@ pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
                 .first()
                 .map_or(e.inner.end, |&c| x.elements[c].span.start),
         )?;
-        let mut children = vec![];
+        let mut children = Vec::with_capacity(e.children.len());
         for (i, &c) in e.children.iter().enumerate() {
             let tail = segment(
                 x.elements[c].span.end,
@@ -139,9 +152,14 @@ pub fn xml_signature(bytes: &[u8]) -> Result<Value> {
                     .get(i + 1)
                     .map_or(e.inner.end, |&n| x.elements[n].span.start),
             )?;
-            children.push(json!([node(x, c, &scope, preserve)?, tail]));
+            children.push(Value::Array(vec![node(x, c, &scope, preserve)?, tail]));
         }
-        Ok(json!([name, attrs, head, children]))
+        Ok(Value::Array(vec![
+            Value::String(name),
+            Value::Object(attrs),
+            head,
+            Value::Array(children),
+        ]))
     }
     node(
         &x,
@@ -254,16 +272,19 @@ pub fn verify_xml(before: &[u8], after: &[u8], stub: Option<&ObjectKey>) -> Resu
     } else {
         Default::default()
     };
-    let before = xml_signature(before)?;
+    let expected_signature = xml_signature(before)?;
+    if stub.is_none() && before == after {
+        return Ok(());
+    }
     let after = xml_signature(after)?;
     let Some(key) = stub else {
-        return if before == after {
+        return if expected_signature == after {
             Ok(())
         } else {
             Err(invalid("Изменилось полное содержимое XML"))
         };
     };
-    let (expected, props, id) = object(&before, key)?;
+    let (expected, props, id) = object(&expected_signature, key)?;
     let (actual, actual_props, actual_id) = object(&after, key)?;
     if expected.name() != actual.name() || id != actual_id {
         return Err(invalid(format!(

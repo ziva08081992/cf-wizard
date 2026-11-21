@@ -1,4 +1,5 @@
 //! Presentation state. IO executes in jobs; dependency and build decisions live in services.
+use crate::preview_eta::{self, History as PreviewHistory};
 use cf_application::{
     BuildOptions, Cancellation, DependencyEngine, MetadataSource, PrefetchProgress, PreparedPlan,
 };
@@ -106,6 +107,7 @@ pub struct Model {
     pub status_kind: String,
     pub generation: u64,
     pub preview_ordinal: u64,
+    preview_history: PreviewHistory,
     pub catalog_revision: u64,
     pub task_revision: u64,
     pub cancel: Cancellation,
@@ -189,6 +191,7 @@ impl Model {
             status_kind: "idle".into(),
             generation: 0,
             preview_ordinal: 0,
+            preview_history: PreviewHistory::load(app_base.join("preview-timings.json")),
             catalog_revision: 0,
             task_revision: 0,
             cancel: Cancellation::default(),
@@ -242,6 +245,42 @@ impl Model {
                 .cloned()
         }
     }
+    fn preview_timing_key(&self, platform: Option<&Platform>) -> Option<String> {
+        let source = self.source.as_ref()?;
+        if self.selected.is_empty() {
+            return None;
+        }
+        let index = match self.index.as_ref().filter(|index| index.ready) {
+            Some(index) => {
+                let path = index.path.as_ref()?;
+                Some((path, preview_eta::file_stamp(path)?))
+            }
+            None => None,
+        };
+        let revision = if let Some(git) = &self.git {
+            if index.is_none() || git.connection().branch != self.preferences.git_settings.branch {
+                return None;
+            }
+            preview_eta::key(("git", git.preference_key(), git.revision()))?
+        } else {
+            let root = source.materialized_root()?;
+            preview_eta::key((
+                "local",
+                preview_eta::file_stamp(&root.join("Configuration.xml"))?,
+                preview_eta::file_stamp(&root.join("ConfigDumpInfo.xml"))?,
+            ))?
+        };
+        preview_eta::key((
+            source.identity(),
+            revision,
+            index,
+            platform.map(|platform| (&platform.path, &platform.backend, &platform.version)),
+            self.preferences.memory_budget_mib,
+            &self.selected,
+            &self.excluded,
+        ))
+    }
+
     pub fn snapshot(&self) -> Value {
         let p = self.platform();
         let source = self.source.as_ref();
@@ -250,6 +289,13 @@ impl Model {
         let index_found = self.index.as_ref().is_some_and(|i| i.found);
         let mut values = self.values.clone();
         values.insert("build_mode".into(), self.preferences.build_mode.clone());
+        values.insert(
+            "memory_budget_mib".into(),
+            self.preferences
+                .memory_budget_mib
+                .map(|mib| mib.to_string())
+                .unwrap_or_default(),
+        );
         values.insert(
             "platform_path".into(),
             p.as_ref()
@@ -269,7 +315,16 @@ impl Model {
         );
         let git_ready = self.preferences.source_mode == "git"
             && git.is_some_and(|g| g.connection().branch == self.preferences.git_settings.branch);
-        json!({"values":values,"platforms":self.platforms.iter().map(|p|p.path.to_string_lossy()).collect::<Vec<_>>(),"platformPlaceholder":"Выберите установленную платформу 1С x64","platformLabel":p.map(|p|format!("{} · {}",if p.backend=="ibcmd"{"ibcmd"}else{"Конфигуратор"},p.version)).unwrap_or_default(),
+        let preview_estimate = if self.busy {
+            None
+        } else {
+            self.preview_timing_key(p.as_ref())
+                .and_then(|key| self.preview_history.estimate(&key))
+        };
+        let budget_advice =
+            crate::memory_pressure::budget_advice(self.preferences.memory_budget_mib)
+                .map(|(available_mib, warn)| json!({"availableMiB": available_mib, "warn": warn}));
+        json!({"values":values,"previewEstimate":preview_estimate,"memoryBudgetAdvice":budget_advice,"platforms":self.platforms.iter().map(|p|p.path.to_string_lossy()).collect::<Vec<_>>(),"platformPlaceholder":"Выберите установленную платформу 1С x64","platformLabel":p.map(|p|format!("{} · {}",if p.backend=="ibcmd"{"ibcmd"}else{"Конфигуратор"},p.version)).unwrap_or_default(),
             "configuration":source.map(|s|s.catalog().name.as_str()).unwrap_or(""),
             "activeGit":git.is_some(),"activeSource":git.map(|g|format!("{} · {} · {}",if g.connection().provider=="github"{"GitHub"}else{"Gitea"},g.connection().branch,&g.revision()[..12])).unwrap_or_else(||"Локальная папка".into()),
             "catalogRevision":self.catalog_revision,"sourceMode":self.preferences.source_mode,"gitBranches":self.branches,"gitBranch":self.preferences.git_settings.branch,"gitLocation":format!("{} / {}",self.preferences.git_settings.repository,self.preferences.git_settings.directory),"gitPollInfo":self.poll_info,
@@ -486,6 +541,7 @@ impl Model {
         let cancel = self.cancel.clone();
         let generation = self.generation;
         let proxy = self.proxy.clone();
+        let monitor_memory = matches!(operation, Some("preview" | "index"));
         let preview_ordinal = (operation == Some("preview")).then(|| {
             self.preview_ordinal = self.preview_ordinal.saturating_add(1);
             self.preview_ordinal
@@ -496,7 +552,18 @@ impl Model {
             }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 cf_application::memory_trace::with_preview(preview_ordinal.unwrap_or(0), || {
-                    job(cancel, log.clone())
+                    if monitor_memory {
+                        let completion = if preview_ordinal.is_some() {
+                            crate::memory_pressure::Completion::UnpublishedPreview
+                        } else {
+                            crate::memory_pressure::Completion::PreserveResult
+                        };
+                        crate::memory_pressure::run(&cancel, completion, || {
+                            job(cancel.clone(), log.clone())
+                        })
+                    } else {
+                        job(cancel, log.clone())
+                    }
                 })
             }))
             .unwrap_or_else(|_| {
@@ -666,6 +733,9 @@ impl Model {
             .and_then(|i| i.path.clone());
         let selected = self.selected.clone();
         let excluded = self.excluded.clone();
+        let timing_key = self.preview_timing_key(self.platform().as_ref());
+        let preview_started = Instant::now();
+        let manual_mib = self.preferences.memory_budget_mib;
         self.start("Определяю зависимости…",callback,Some("preview"),move|c,log|{
 crate::profile::run("preview",source.as_ref(),Some((&selected,&excluded)),log.as_deref(),|| -> Result<Update> {
             cf_application::profile::identity("index_requested",if index.is_some(){"true"}else{"false"});
@@ -675,7 +745,20 @@ let index_started=Instant::now();
             let index_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-index-open",json!({"milliseconds":index_open_ms,"success":opened.is_ok(),"hasIndex":matches!(&opened,Ok(Some(_)))})));
             let reader=preserve_operation_error(opened,index_log)?;
             let engine_started=Instant::now();
-            let prepared=RustEngine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&excluded,&c);
+            let budget = crate::memory_pressure::preview_budget(manual_mib)?;
+            let engine = if let Some(budget) = budget {
+                if let Some(log) = &log {
+                    log.value("preview-memory-budget", json!({
+                        "manualMiB": manual_mib,
+                        "initialDocumentCacheMiB": budget.cache_bytes / (1024 * 1024)
+                    }))?;
+                }
+                RustEngine::with_document_cache_budget(Some(budget.cache_bytes))
+                    .with_cache_headroom(Arc::new(move || budget.additional_bytes()))
+            } else {
+                RustEngine
+            };
+            let prepared=engine.preview(source.as_ref(),reader.as_ref().map(|r|r as &dyn cf_application::FactStore),&selected,&excluded,&c);
             let engine_ms=engine_started.elapsed().as_secs_f64()*1000.;
             let engine_log=log.as_ref().map_or(Ok(()),|log|log.value("preview-engine",json!({"milliseconds":engine_ms,"success":prepared.is_ok()})));
             let plan=preserve_operation_error(prepared,engine_log)?;
@@ -695,6 +778,13 @@ let index_started=Instant::now();
                 m.status_kind = if complete { "ok" } else { "error" }.into();
                 m.signals.push(("stubsChanged".into(), vec![m.stubs()]));
                 cf_application::memory_trace::mark(m.preview_ordinal, "preview_stubs_ready");
+                let elapsed = preview_started.elapsed();
+                if complete
+                    && let Some(key) = timing_key
+                    && m.preview_timing_key(m.platform().as_ref()).as_deref() == Some(key.as_str())
+                {
+                    m.preview_history.record(key, elapsed);
+                }
             }))
 })
         })
@@ -736,17 +826,23 @@ let index_started=Instant::now();
             None,
             move |c, _| {
                 let output = Output { log: log.clone() };
-                let result = cf_application::build_package(
-                    plan.as_ref(),
-                    source.as_ref(),
-                    &excluded,
-                    &options,
-                    &cf_application::BuildServices {
-                        output: &output,
-                        builder: &cf_infrastructure::native::Native { log: log.clone() },
-                        log: log.as_ref(),
-                    },
+                let result = crate::memory_pressure::run(
                     &c,
+                    crate::memory_pressure::Completion::PreserveResult,
+                    || {
+                        cf_application::build_package(
+                            plan.as_ref(),
+                            source.as_ref(),
+                            &excluded,
+                            &options,
+                            &cf_application::BuildServices {
+                                output: &output,
+                                builder: &cf_infrastructure::native::Native { log: log.clone() },
+                                log: log.as_ref(),
+                            },
+                            &c,
+                        )
+                    },
                 );
                 if let Err(e) = &result {
                     let _ = log.failure(&e.to_string());
@@ -955,6 +1051,16 @@ let index_started=Instant::now();
             "editField" if !self.busy=>{
                 let name=field(args,0);let value=field(args,1).to_owned();
                 if name=="build_mode"&&["auto","designer","ibcmd"].contains(&value.as_str()){self.preferences.build_mode=value;}
+                else if name=="memory_budget_mib" {
+                    let value = value.trim();
+                    self.preferences.memory_budget_mib = if value.is_empty() {
+                        None
+                    } else {
+                        Some(value.parse::<u32>().ok().filter(|&mib| mib > 0).ok_or_else(||
+                            Error::Invalid("Укажите целое положительное число МиБ или оставьте поле пустым для автоматического режима.".into())
+                        )?)
+                    };
+                }
                 else if name=="platform_path"{let key=if self.preferences.build_mode=="ibcmd"{"platform"}else{"designer"};self.values.insert(key.into(),value);self.platform_check=true;}
                 else if ["export","destination","logs","task","index_directory"].contains(&name){
                     let changed=self.values.get(name)!=Some(&value);
@@ -999,7 +1105,7 @@ let index_started=Instant::now();
                     Ok(Box::new(move|m|{m.task_filter=Some(result);m.task_revision+=1;m.task_scope.clear();m.status="Отбор по комментарию готов. Проверьте объекты и нажмите «Отметить найденные».".into();m.status_kind="ok".into();}))
                 })?;return Ok(None);
             }
-            "openLink"=>{let url=match field(args,0){"repository"=>"https://github.com/alonehobo/1c-partial-cf","licenses"=>"https://github.com/tauri-apps/wry","icons"=>"https://lucide.dev/license",_=>return Err(Error::Invalid("Неизвестная ссылка".into()))};shell_open(Path::new(url))?;}
+            "openLink"=>{let url=match field(args,0){"repository"=>"https://github.com/ziva08081992/cf-wizard","upstream"=>"https://github.com/alonehobo/1c-partial-cf","licenses"=>"https://github.com/tauri-apps/wry","icons"=>"https://lucide.dev/license",_=>return Err(Error::Invalid("Неизвестная ссылка".into()))};shell_open(Path::new(url))?;}
             "command"=>{
                 match field(args,0){
                     "open-source"=>{
@@ -1026,7 +1132,7 @@ let index_started=Instant::now();
                             return Ok(None);
                         }
                     }
-                    "about"=>self.notice("О программе",format!("Мастер технической CF · {}\nПолностью на Rust: WebView2, SQLite.\n\nАлгоритм подготовки технической конфигурации перенесён из partial_cf.py проекта alonehobo/1c-partial-cf. Большое спасибо alonehobo за исходный скрипт.\n\nВнешние команды установленной 1С выполняют сборку CF и обратную проверку.",env!("CARGO_PKG_VERSION"))),
+                    "about"=>self.notice("О программе",format!("Мастер технической CF · {}\nАвтор CF Wizard — ZiVa.\nПолностью на Rust: WebView2, SQLite.\n\nАлгоритм подготовки технической конфигурации перенесён из partial_cf.py проекта alonehobo/1c-partial-cf. Большое спасибо alonehobo за исходный скрипт.\n\nВнешние команды установленной 1С выполняют сборку CF и обратную проверку.",env!("CARGO_PKG_VERSION"))),
                     "cancel-git-task"=>{self.cancel.cancel();self.cancelling=true;}
                     "mark-git-task" if !self.busy=>{if let Some(result)=&self.task_filter{self.selected.extend(result.objects.iter().cloned());self.invalidate_plan();}}
                     "clear-git-task" if !self.busy=>{self.task_filter=None;self.task_revision+=1;}

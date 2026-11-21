@@ -5,12 +5,15 @@ use crate::{
     projection, source_edits,
     source_reader::SourceDocument,
     source_xml::{READABLE, SourceXml, XSI},
-    xml::escape,
+    xml::{XmlInput, escape},
 };
 use cf_application::MetadataSource;
 use cf_application::profile;
 use cf_domain::{Error, Result, package_plan::*, source_facts::*};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 const SUBSYSTEM: &str = "Subsystem._Перенос";
 
@@ -88,7 +91,7 @@ fn declarations(
     retained
         .iter()
         .filter_map(|id| {
-            let fragment = &source.facts.fragments[id];
+            let fragment = &source.facts.fragments[id.as_str()];
             (fragment.kind == FragmentKind::Declaration).then(|| {
                 (
                     id.clone(),
@@ -101,7 +104,7 @@ fn declarations(
 fn identities(source: &SourceDocument, retained: &BTreeSet<String>) -> BTreeMap<String, String> {
     let mut result = BTreeMap::new();
     for id in retained {
-        let fragment = &source.facts.fragments[id];
+        let fragment = &source.facts.fragments[id.as_str()];
         if let Some(uuid) = &fragment.uuid {
             result.insert(format!("{id}/@uuid"), uuid.clone());
         }
@@ -110,6 +113,39 @@ fn identities(source: &SourceDocument, retained: &BTreeSet<String>) -> BTreeMap<
         }
     }
     result
+}
+
+/// Only the source facts needed after the dependency kernel has finished.
+pub(crate) struct DescriptorMetadata {
+    pub declarations: BTreeMap<String, (String, String)>,
+    pub identity: BTreeMap<String, String>,
+}
+
+impl DescriptorMetadata {
+    pub fn capture(source: &SourceDocument, retained: &BTreeSet<String>) -> Self {
+        Self {
+            declarations: declarations(source, retained),
+            identity: identities(source, retained),
+        }
+    }
+}
+
+pub(crate) fn selected_projection(source: &SourceDocument, path: &str) -> ObjectProjection {
+    let retained = source
+        .facts
+        .fragments
+        .keys()
+        .map(ToString::to_string)
+        .collect();
+    let metadata = DescriptorMetadata::capture(source, &retained);
+    ObjectProjection {
+        content: ContentMode::Full,
+        role: SelectionRole::Selected,
+        descriptor: path.into(),
+        declarations: metadata.declarations,
+        identity: metadata.identity,
+        retained,
+    }
 }
 
 struct ConfigurationFiles {
@@ -307,7 +343,7 @@ fn configuration(
             }
             true
         })
-        .map(|(_, id)| id.clone())
+        .map(|(_, id)| id.to_string())
         .collect();
     let identity = identities(source, &retained);
     let uuid = crate::identity::transfer_subsystem(xml.attr(object, "uuid").unwrap_or_default());
@@ -451,7 +487,7 @@ pub(crate) fn compile(
     recipe: &Recipe,
     source: &dyn MetadataSource,
     built_objects: &BTreeMap<String, crate::engine::Built>,
-    documents: &BTreeMap<String, std::sync::Arc<crate::source_reader::SourceDocument>>,
+    selected_objects: BTreeMap<String, ObjectProjection>,
 ) -> Result<CompiledPackagePlan> {
     profile::measure("engine.package_compile", "engine.finish", 0, None, || {
         let composition = &recipe.composition;
@@ -516,7 +552,7 @@ pub(crate) fn compile(
             stamp: stamp.clone(),
             selected: composition.selected.clone(),
             dependencies: composition.stubs.keys().cloned().collect(),
-            objects: BTreeMap::new(),
+            objects: selected_objects,
             files: BTreeMap::new(),
         };
         let mut merge = MergePlan {
@@ -526,24 +562,11 @@ pub(crate) fn compile(
             order: vec![],
         };
         for key in &composition.selected {
-            let path = crate::source_schema::descriptor(key).expect("metadata descriptor");
-            let document = documents.get(key).ok_or_else(|| {
-                Error::Invalid(format!(
+            if !projection.objects.contains_key(key) {
+                return Err(Error::Invalid(format!(
                     "Не прочитаны исходные факты выбранного объекта {key}"
-                ))
-            })?;
-            let retained = document.facts.fragments.keys().cloned().collect();
-            projection.objects.insert(
-                key.clone(),
-                ObjectProjection {
-                    content: ContentMode::Full,
-                    role: SelectionRole::Selected,
-                    descriptor: path,
-                    declarations: declarations(document, &retained),
-                    identity: identities(document, &retained),
-                    retained,
-                },
-            );
+                )));
+            }
             for path in &recipe.below[key] {
                 insert(&mut projection.files, path, copy(recipe, key, path)?)?;
             }
@@ -564,7 +587,7 @@ pub(crate) fn compile(
                 project(
                     key,
                     &path,
-                    built.source.view.xml.source.as_bytes(),
+                    recipe.frozen_text(&path)?.as_bytes(),
                     built.projection.edits.clone(),
                     built.projection.expected.clone(),
                 )?
@@ -580,9 +603,9 @@ pub(crate) fn compile(
                     content,
                     role: SelectionRole::Dependency,
                     descriptor: path,
-                    declarations: declarations(&built.source, &built.projection.retained),
+                    declarations: built.metadata.declarations.clone(),
                     retained: built.projection.retained.clone(),
-                    identity: identities(&built.source, &built.projection.retained),
+                    identity: built.metadata.identity.clone(),
                 },
             );
             merge.objects.insert(
@@ -601,33 +624,28 @@ pub(crate) fn compile(
                 .iter()
                 .find(|(owner, _)| key.starts_with(&format!("{owner}.")))
                 .ok_or_else(|| Error::Invalid(format!("Нет владельца защиты {key}")))?;
-            let (_, declaration) = built
-                .source
-                .facts
-                .fragments
+            let (id, (tag, name)) = built
+                .metadata
+                .declarations
                 .iter()
-                .find(|(_, fragment)| {
-                    fragment.kind == FragmentKind::Declaration
-                        && format!("{owner}.{}.{}", fragment.tag.local, fragment.name) == *key
-                        && built.projection.retained.contains(&fragment.id)
-                })
+                .find(|(_, (tag, name))| format!("{owner}.{tag}.{name}") == *key)
                 .ok_or_else(|| Error::Invalid(format!("Нет сохранённой декларации для {key}")))?;
             merge.children.insert(
                 key.clone(),
                 MergeChildPlan {
                     owner: owner.clone(),
-                    fragment: declaration.id.clone(),
-                    tag: declaration.tag.local.clone(),
-                    name: declaration.name.clone(),
+                    fragment: id.clone(),
+                    tag: tag.clone(),
+                    name: name.clone(),
                     protected: protected.clone(),
                 },
             );
         }
         let configuration_key = format!("Configuration.{}", source.catalog().name);
-        let config_source = SourceDocument::descriptor(
+        let config_source = SourceDocument::descriptor_input(
             &configuration_key,
             "Configuration.xml",
-            recipe.frozen_text("Configuration.xml")?.as_bytes(),
+            XmlInput::Shared(Arc::clone(recipe.frozen_text("Configuration.xml")?)),
             proof.clone(),
         )?;
         let included = composition

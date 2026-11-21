@@ -172,7 +172,7 @@ fn decode_row(
             if payload.len() as u64 > MAX_PAYLOAD {
                 return Err(oversized());
             }
-            let facts: SourceFacts = if compact {
+            let mut facts: SourceFacts = if compact {
                 let dto: compact::DescriptorFacts =
                     profile::measure("facts.json", "facts.decode", payload.len(), None, || {
                         serde_json::from_slice(&payload).map_err(crate::external)
@@ -187,6 +187,30 @@ fn decode_row(
             profile::measure("facts.validate.codec", "facts", 0, None, || {
                 facts.validate()
             })?;
+            if !compact {
+                // JSON repeats each address by value. Resolve equal addresses only after
+                // validation so a mismatched key/id or dangling link is never repaired.
+                let addresses: std::collections::BTreeSet<_> =
+                    facts.fragments.keys().cloned().collect();
+                for (key, fragment) in &mut facts.fragments {
+                    fragment.id = key.clone();
+                    if let Some(parent) = &mut fragment.parent {
+                        *parent = addresses.get(parent).expect("validated parent").clone();
+                    }
+                }
+                for reference in &mut facts.references {
+                    reference.fragment = addresses
+                        .get(&reference.fragment)
+                        .expect("validated reference")
+                        .clone();
+                }
+                for note in &mut facts.coverage_notes {
+                    note.fragment = addresses
+                        .get(&note.fragment)
+                        .expect("validated coverage note")
+                        .clone();
+                }
+            }
             if facts.object != object
                 || OBJECT_FACETS.iter().any(|facet| {
                     !facts.versions.compatible(versions, *facet)
@@ -203,8 +227,8 @@ fn decode_row(
                 .find(|fragment| fragment.kind == cf_domain::source_facts::FragmentKind::Object)
                 .ok_or_else(|| Error::Invalid("Нет объекта в SourceFacts payload".into()))?;
             let expected = hex::encode(descriptor_hash);
-            if object.origin.sha256 != expected
-                || facts.proof.inputs.get(&object.origin.path)
+            if object.origin.sha256.as_ref() != expected
+                || facts.proof.inputs.get(object.origin.path.as_ref())
                     != Some(&InputObservation::Content { sha256: expected })
             {
                 return Err(Error::Invalid(
@@ -280,8 +304,12 @@ mod tests {
             .values_mut()
             .find(|fragment| fragment.tag.local == "Name")
             .unwrap();
-        name.parent = Some(name.id.replace("}Name[0]", "}Type[0]"));
+        name.parent = Some(name.id.replace("}Name[0]", "}Type[0]").into());
         assert_eq!(nonhierarchical, read(&nonhierarchical).unwrap());
+
+        let mut mismatched_id = facts.clone();
+        mismatched_id.fragments.values_mut().next().unwrap().id = "foreign".into();
+        assert!(read(&mismatched_id).is_err());
 
         let mut missing_parent = facts.clone();
         missing_parent

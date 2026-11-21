@@ -9,6 +9,31 @@ const TARGET: &str = "Catalog.Target";
 const SIDE: &str = "Catalogs/Target/Forms/Screen/Ext/Form.xml";
 
 #[test]
+fn live_descriptor_rereads_share_text_and_detect_changes() {
+    let (_dir, src) = fixture();
+    let cancel = Cancellation::default();
+    let mut session = Session::new(
+        &src,
+        None,
+        &BTreeSet::from([ROOT.into()]),
+        &BTreeSet::new(),
+        &cancel,
+    )
+    .unwrap();
+    let path = descriptor(TARGET).unwrap();
+    let document = session.document(TARGET).unwrap();
+    let reread = session.read(&path).unwrap();
+    assert_eq!(src.reads.lock().unwrap()[&path], 2);
+    assert!(Arc::ptr_eq(&document.view.xml.source, &reread));
+    assert!(Arc::ptr_eq(&session.descriptors[TARGET], &reread));
+    assert!(Arc::ptr_eq(&session.text_cache[&path], &reread));
+
+    fs::write(src.local.root.join(&path), "<changed/>").unwrap();
+    assert!(session.read(&path).is_err());
+    assert_eq!(src.reads.lock().unwrap()[&path], 3);
+}
+
+#[test]
 fn namespaced_minimum_field_uses_source_order_with_resource_priority() {
     let dir = tempfile::tempdir().unwrap();
     let files = BTreeMap::from([
@@ -364,4 +389,86 @@ fn session_memo_hit_still_rejects_a_changed_side_file() {
         "the error must be detected on a cache hit"
     );
     assert_eq!(src.reads.lock().unwrap()[SIDE], 2);
+}
+
+#[test]
+fn evicted_documents_preserve_the_frozen_package_and_branch() {
+    let inputs = tests::rows();
+    let row = &inputs["cases"][1];
+    let temp = tempfile::tempdir().unwrap();
+    let cancel = Cancellation::default();
+    let selected = serde_json::from_value(row["selected"].clone()).unwrap();
+    let excluded = BTreeSet::new();
+    for pinned in [false, true] {
+        let src = tests::source(row, &temp.path().join(format!("source-{pinned}")), pinned);
+        let report = crate::indexing::update(
+            &src,
+            &temp.path().join(format!("index-{pinned}")),
+            &cancel,
+            &|_, _| {},
+        )
+        .unwrap();
+        let index = if pinned {
+            Some(
+                crate::index::IndexReader::open(
+                    &report.path,
+                    crate::index::Proof::Git(src.manifest().unwrap()),
+                )
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        let index = index.as_ref().map(|index| index as &dyn FactStore);
+        let baseline = prepare(&src, index, &selected, &excluded, &cancel).unwrap();
+        let mut limited = Session::new(&src, index, &selected, &excluded, &cancel).unwrap();
+        limited.configure(&RustEngine::with_document_cache_budget(Some(0)));
+        let key = selected.first().unwrap();
+        let document = limited.document(key).unwrap();
+        let expected = document.facts.clone();
+        let weak = Arc::downgrade(&document);
+        drop(document);
+        assert!(weak.upgrade().is_none());
+        assert!(limited.source_documents.is_empty());
+        assert_eq!(limited.document(key).unwrap().facts, expected);
+        assert_eq!(limited.cache_budget.replays, 1);
+        let budgeted = limited.finish().unwrap();
+        assert!(baseline.compiled.is_some());
+        assert_eq!(baseline.compiled, budgeted.compiled);
+        let excluded = BTreeSet::from(["Catalog.Тест".into()]);
+        let expected = reprepare(&src, &baseline, &excluded, &cancel).unwrap();
+        let actual = reprepare(&src, &budgeted, &excluded, &cancel).unwrap();
+        assert_eq!(actual.engine.document_cache_bytes, Some(0));
+        assert_eq!(actual.compiled, expected.compiled);
+    }
+}
+
+#[test]
+fn measured_headroom_releases_cached_xml_before_the_next_parse() {
+    let inputs = tests::rows();
+    let row = &inputs["cases"][1];
+    let temp = tempfile::tempdir().unwrap();
+    let src = tests::source(row, temp.path(), false);
+    let selected = serde_json::from_value(row["selected"].clone()).unwrap();
+    let cancel = Cancellation::default();
+    let mut session = Session::new(&src, None, &selected, &BTreeSet::new(), &cancel).unwrap();
+    let budget = 1 << 20;
+    let remaining = Arc::new(std::sync::atomic::AtomicU64::new(budget));
+    let sample = Arc::clone(&remaining);
+    session.configure(
+        &RustEngine::with_document_cache_budget(Some(budget)).with_cache_headroom(Arc::new(
+            move || Some(sample.load(std::sync::atomic::Ordering::Relaxed)),
+        )),
+    );
+    let first = session.document(selected.first().unwrap()).unwrap();
+    let weak = Arc::downgrade(&first);
+    drop(first);
+    assert!(weak.upgrade().is_some());
+    remaining.store(0, std::sync::atomic::Ordering::Relaxed);
+    session.cache_budget.resample_on_next_demand();
+    session.document("Enum.Статусы").unwrap();
+    assert!(weak.upgrade().is_none());
+    assert!(session.source_documents.is_empty());
+    assert!(session.cache_budget.evictions > 0);
+    assert!(session.cache_budget.high_water <= budget);
 }

@@ -24,6 +24,7 @@ fn parent_first_addresses_preserve_namespace_paths_and_cached_evidence() {
     );
     let original = document(key, &xml);
     for (id, current) in original.node_ids.iter().enumerate() {
+        assert!(Arc::ptr_eq(current, &original.facts.fragments[current].id));
         let legacy = original
             .view
             .path(id)
@@ -31,7 +32,7 @@ fn parent_first_addresses_preserve_namespace_paths_and_cached_evidence() {
             .map(|step| format!("{{{}}}{}[{}]", step.name.uri, step.name.local, step.ordinal))
             .collect::<Vec<_>>()
             .join("/");
-        assert_eq!(current, &format!("{key}/{legacy}"));
+        assert_eq!(current.as_ref(), format!("{key}/{legacy}"));
     }
     assert!(
         original
@@ -69,7 +70,7 @@ fn parent_first_addresses_preserve_namespace_paths_and_cached_evidence() {
         let object = broken.fragments.get_mut(object_id).unwrap();
         match field {
             "span" => object.origin.span = None,
-            "tag" => object.tag.local = "Wrong".into(),
+            "tag" => std::sync::Arc::make_mut(&mut object.tag).local = "Wrong".into(),
             "parent" => object.parent = None,
             _ => unreachable!(),
         }
@@ -163,7 +164,7 @@ fn sidecar_facts_keep_their_file_origin_and_expanded_type() {
             .facts
             .fragments
             .values()
-            .all(|fragment| fragment.origin.path == "Forms/First.xml")
+            .all(|fragment| fragment.origin.path.as_ref() == "Forms/First.xml")
     );
 }
 #[test]

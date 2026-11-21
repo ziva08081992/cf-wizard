@@ -12,6 +12,7 @@
     platform_path: one("#cf-platform"),
     task: one("#cf-task"),
     index_directory: one("#cf-index"),
+    memory_budget_mib: one("#cf-memory-budget"),
   };
   const buildMode = one("#cf-build-mode");
   const buildMenu = one("#cf-build-options");
@@ -104,6 +105,15 @@
     }
     const pending = pendingSelection.size > 0;
     action("preview").disabled = pending || !state.canPreview;
+    const previewEstimate = document.getElementById("cf-preview-estimate");
+    previewEstimate.hidden = pending || state.busy || !state.selected?.length;
+    const estimate = state.previewEstimate;
+    previewEstimate.textContent = estimate
+      ? `Ориентир ${estimate.lowerSeconds}–${estimate.upperSeconds} с`
+      : "Пока нет надёжной оценки";
+    previewEstimate.title = estimate
+      ? `По замерам сопоставимых предпросмотров: ${estimate.samples}`
+      : "Нужны замеры для текущего набора и состояния источника";
     action("build").disabled = pending || !state.canBuild;
     action("package").disabled = pending || !state.canOpenPackage;
     one("[data-selected-count]").textContent = "Отмечено " + selected.size;
@@ -428,6 +438,13 @@
       if (key !== "task") input.title = state.values[key];
       input.disabled = state.busy;
     }
+    const memoryAdvice = state.memoryBudgetAdvice;
+    const availableMemory = one("#cf-memory-available");
+    availableMemory.hidden = !memoryAdvice;
+    if (memoryAdvice) {
+      availableMemory.textContent = `Сейчас доступно ${memoryAdvice.availableMiB.toLocaleString("ru-RU")} МиБ ОЗУ.`;
+    }
+    one("#cf-memory-budget-warning").hidden = !memoryAdvice?.warn;
     buildMode.disabled = state.busy;
     if (state.busy && !buildMenu.hidden) setChoiceMenu(buildMode, buildMenu, false);
     for (const button of all("[data-picker]")) button.disabled = state.busy;
@@ -489,7 +506,9 @@
   }
 
   function showPreferences() {
-    if (!preferences.open) preferences.showModal();
+    if (preferences.open) return;
+    preferences.showModal();
+    bridge.snapshot(renderState);
   }
 
   function connectGit() {
@@ -555,7 +574,7 @@
     bridge.journalOpened.connect(showJournal);
     bridge.notice.connect(showNotice);
     for (const [key, input] of Object.entries(fields)) {
-      input.addEventListener(["logs", "index_directory"].includes(key) ? "change" : "input", () => bridge.editField(key, input.value));
+      input.addEventListener(["logs", "index_directory", "memory_budget_mib"].includes(key) ? "change" : "input", () => bridge.editField(key, input.value));
     }
     bindChoiceMenu(buildMode, buildMenu, value => bridge.editField("build_mode", value));
     bindChoiceMenu(gitBranch, gitBranchMenu, value => bridge.setGitBranch(value));

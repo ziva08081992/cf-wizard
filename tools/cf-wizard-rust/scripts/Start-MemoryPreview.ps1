@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $Executable) {
-    $Executable = Join-Path $PSScriptRoot 'CF-Wizard-0.8.10.exe'
+    $Executable = Join-Path $PSScriptRoot 'CF-Wizard-0.9.0.exe'
 }
 $resolvedExe = (Resolve-Path -LiteralPath $Executable).ProviderPath
 if (-not [IO.File]::Exists($resolvedExe)) { throw 'Executable must be a file.' }

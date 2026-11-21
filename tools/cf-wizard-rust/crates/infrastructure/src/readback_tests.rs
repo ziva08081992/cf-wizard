@@ -282,3 +282,33 @@ fn malformed_or_wrong_stub_roles_do_not_become_an_allow_rule() {
     }
     assert!(verify_xml(before.as_bytes(), b"<broken", Some(&key("Catalog"))).is_err());
 }
+
+#[test]
+fn signature_preserves_scoped_names_mixed_content_and_xml_whitespace() {
+    let xml = "<R xmlns='urn:outer' xmlns:p='urn:parent' xml:space='preserve'>\r\n\
+<p:C xmlns:p='urn:child' a='x\t&#9;y\r\nz&#13;' p:b='t'>one\r<![CDATA[two&]]>&amp;</p:C>\r\
+<p:C xml:space='default'>  </p:C>\r\n<T xmlns=''><U/></T></R>";
+    let preserve = "{http://www.w3.org/XML/1998/namespace}space";
+    let signature = json!(["{urn:outer}R", {(preserve): ["text", "preserve"]}, ["text", "\n"], [
+        [["{urn:child}C", {"a": ["text", "x \ty z\r"], "{urn:child}b": ["text", "t"]},
+            ["text", "one\ntwo&&"], []], ["text", "\n"]],
+        [["{urn:parent}C", {(preserve): ["text", "default"]}, null, []], ["text", "\n"]],
+        [["T", {}, ["text", ""], [[["U", {}, ["text", ""], []], ["text", ""]]]], ["text", ""]]
+    ]]);
+    assert_eq!(xml_signature(xml.as_bytes()).unwrap(), signature);
+}
+
+#[test]
+fn identical_bytes_still_validate_xml_and_stub_requirements() {
+    for invalid in [
+        b"<R".as_slice(),
+        b"<R><p:C/></R>",
+        b"<R>&undefined;</R>",
+        b"<R>\xff</R>",
+        br#"<R xmlns:a="urn:u" xmlns:b="urn:u" a:x="1" b:x="2"/>"#,
+    ] {
+        assert!(verify_xml(invalid, invalid, None).is_err());
+    }
+    let duplicate = descriptor("Catalog", "<Name>Example</Name>", "", false);
+    rejects("Catalog", &duplicate, &duplicate);
+}

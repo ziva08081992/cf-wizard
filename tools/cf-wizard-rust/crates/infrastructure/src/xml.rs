@@ -1,6 +1,6 @@
 //! Source spans permit surgical edits without reserialising Designer XML.
 use cf_domain::{Error, Result};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 #[derive(Clone, Debug)]
@@ -22,10 +22,34 @@ pub struct Element {
 }
 #[derive(Clone, Debug)]
 pub struct Xml {
-    pub source: String,
+    pub source: Arc<String>,
     pub elements: Vec<Element>,
     pub root: usize,
 }
+pub(crate) enum XmlInput<'a> {
+    Bytes(&'a [u8]),
+    Shared(Arc<String>),
+}
+
+impl XmlInput<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::Shared(text) => text.len(),
+        }
+    }
+
+    fn into_source(self) -> Result<Arc<String>> {
+        match self {
+            Self::Shared(text) => Ok(text),
+            Self::Bytes(bytes) => {
+                let text = std::str::from_utf8(bytes).map_err(crate::external)?;
+                Ok(Arc::new(text.to_owned()))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Edit {
     pub range: Range<usize>,
@@ -92,9 +116,11 @@ pub fn escape(value: &str) -> String {
 }
 impl Xml {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let source = std::str::from_utf8(bytes)
-            .map_err(crate::external)?
-            .to_owned();
+        Self::parse_input(XmlInput::Bytes(bytes))
+    }
+
+    pub(crate) fn parse_input(input: XmlInput<'_>) -> Result<Self> {
+        let source = input.into_source()?;
         if source.contains("<!DOCTYPE") || source.contains("<!ENTITY") {
             return Err(invalid("DTD и внешние XML entities не поддерживаются"));
         }
@@ -263,7 +289,9 @@ mod tests {
     #[test]
     fn preserves_original_bytes_outside_edit() {
         let input = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<m:Root xmlns:m=\"urn:test\" uuid=\"abc\">\r\n\t<m:Name>Тест &amp; мир</m:Name><Empty />\r\n</m:Root>";
-        let xml = Xml::parse(input.as_bytes()).unwrap();
+        let shared = Arc::new(input.to_owned());
+        let xml = Xml::parse_input(XmlInput::Shared(Arc::clone(&shared))).unwrap();
+        assert!(Arc::ptr_eq(&xml.source, &shared));
         let name = xml.child(xml.root, "Name").unwrap();
         assert_eq!(xml.text(name).unwrap(), "Тест & мир");
         let changed = xml
