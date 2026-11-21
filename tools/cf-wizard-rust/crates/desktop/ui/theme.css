@@ -14,7 +14,6 @@
   #cf-wizard-preview .cf-status-main { display: flex; align-items: center; gap: 9px; }
   #cf-wizard-preview .cf-window-bar { justify-content: space-between; flex-wrap: wrap; background: var(--cf-bar); padding: 8px 15px; border-bottom: 1px solid var(--cf-border); min-height: 50px; }
   #cf-wizard-preview .cf-brand { font-size: 14px; font-weight: 600; }
-  #cf-wizard-preview .cf-app-mark { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--cf-blue); color: white; font: 700 11px/1 "Segoe UI", sans-serif; }
   #cf-wizard-preview .cf-source-toolbar { padding: 10px 15px; border-bottom: 1px solid var(--cf-border); }
   #cf-wizard-preview .cf-source-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
   #cf-wizard-preview .cf-source-label { display: block; margin-bottom: 3px; font-size: 12px; }

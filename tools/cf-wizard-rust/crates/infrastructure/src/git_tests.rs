@@ -58,6 +58,34 @@ impl Http for Mock {
             Ok(serde_json::to_vec(&value).unwrap())
         }
     }
+
+    fn bytes_typed(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+        limit: usize,
+        raw: bool,
+        cancel: &Cancellation,
+    ) -> std::result::Result<Vec<u8>, HttpFailure> {
+        self.bytes(path, query, body, limit, raw, cancel)
+            .map_err(|error| match error {
+                Error::Invalid(ref reason)
+                    if matches!(reason.as_str(), "fixture timeout" | "cancel during timeout") =>
+                {
+                    if reason == "cancel during timeout" {
+                        cancel.cancel();
+                    }
+                    transport_failure(
+                        path,
+                        "ожидание ответа",
+                        Duration::from_secs(20),
+                        &std::io::Error::new(std::io::ErrorKind::TimedOut, "fixture timeout"),
+                    )
+                }
+                error => HttpFailure::Fatal(error),
+            })
+    }
 }
 fn get(path: &str, result: Value) -> Step {
     Step {
@@ -1160,6 +1188,76 @@ fn gitea_batch_is_get_body_query_and_only_missing_rows_fall_back() {
     );
     m.done();
 }
+#[test]
+fn gitea_batch_retries_only_once_after_typed_timeout() {
+    let timeout = || Step {
+        result: Err("fixture timeout"),
+        ..get("file-contents", Value::Null)
+    };
+    let files = [("config/A.xml".into(), blob(b"<A/>"))];
+    let success = get(
+        "file-contents",
+        json!([{"path":"config/A.xml","encoding":"base64","content":STANDARD.encode(b"<A/>")}]),
+    );
+    let recovered = Mock::new(vec![timeout(), success]);
+    let result = gitea(recovered.clone())
+        .files(&id(1), &files, &Cancellation::default())
+        .unwrap();
+    assert_eq!(result["config/A.xml"], b"<A/>");
+    recovered.done();
+    let calls = recovered.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0], calls[1],
+        "same URL parameters and pinned revision"
+    );
+
+    let exhausted = Mock::new(vec![timeout(), timeout()]);
+    let error = gitea(exhausted.clone())
+        .files(&id(1), &files, &Cancellation::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Повтор пакетного запроса после таймаута"));
+    assert!(error.contains("file-contents"));
+    assert!(error.contains("20000 мс"));
+    exhausted.done();
+
+    let cancelled = Mock::new(vec![
+        timeout(),
+        Step {
+            result: Err("cancel during timeout"),
+            ..get("file-contents", Value::Null)
+        },
+    ]);
+    assert!(matches!(
+        gitea(cancelled.clone()).files(&id(1), &files, &Cancellation::default()),
+        Err(Error::Cancelled)
+    ));
+    cancelled.done();
+}
+
+#[test]
+fn transport_diagnostic_omits_private_path_and_source_error_text() {
+    let error = std::io::Error::other("https://server.test/?token=fixture-secret");
+    let diagnostic = transport_failure(
+        "raw/private/Module.xml",
+        "чтение ответа",
+        Duration::from_millis(12),
+        &error,
+    );
+    assert!(matches!(
+        diagnostic,
+        HttpFailure::Transport {
+            timed_out: false,
+            ..
+        }
+    ));
+    let text = diagnostic.into_domain_error().to_string();
+    assert!(text.contains("raw · чтение ответа · сбой транспорта · 12 мс"));
+    assert!(!text.contains("private"));
+    assert!(!text.contains("fixture-secret"));
+}
+
 #[test]
 fn github_graphql_binary_fallback_and_partial_errors() {
     let a = blob(b"abc");

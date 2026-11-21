@@ -15,7 +15,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release --locked
 ```
 
-Результат: `target/release/cf-wizard-rust.exe` внутри workspace, либо каталог из `CARGO_TARGET_DIR`. Для распространения переименуйте копию в `CF-Wizard-Rust-0.8.0-rust.2.exe`. HTML/CSS/JavaScript встроены в EXE. `Cargo.lock` закрепляет зависимости; `.cargo/config.toml` включает статический C runtime для Windows MSVC x64.
+Результат: `target/release/cf-wizard-rust.exe` внутри workspace, либо каталог из `CARGO_TARGET_DIR`. Для распространения переименуйте копию в `CF-Wizard-0.8.10.exe`. HTML/CSS/JavaScript встроены в EXE. `Cargo.lock` закрепляет зависимости; `.cargo/config.toml` включает статический C runtime для Windows MSVC x64.
 
 Обычная сборка и тесты не запускают Python. Сохранённые эталоны для сопоставления с Python 0.7.3 включены в `tests/fixtures`; Python-генераторы нужны только для их повторного получения.
 

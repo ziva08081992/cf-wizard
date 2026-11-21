@@ -270,34 +270,97 @@ fn all_four_register_kinds_and_information_register_fallbacks_have_minimum_cases
 #[test]
 fn all_required_scalar_properties_survive_projection_and_strict_readback() {
     let cases = [
-        ("FunctionalOption", "Location"),
-        ("BusinessProcess", "Task"),
-        ("AccountingRegister", "ChartOfAccounts"),
-        ("CalculationRegister", "ChartOfCalculationTypes"),
-        ("CalculationRegister", "Schedule"),
-        ("CalculationRegister", "ScheduleDate"),
-        ("CalculationRegister", "ScheduleValue"),
-        ("ChartOfAccounts", "ExtDimensionTypes"),
-        ("CommonCommand", "Group"),
-        ("CommonAttribute", "DataSeparationUse"),
-        ("CommonAttribute", "DataSeparationValue"),
-        ("EventSubscription", "Handler"),
-        ("EventSubscription", "Source"),
-        ("ScheduledJob", "MethodName"),
+        (
+            "FunctionalOption",
+            "Location",
+            "Constant.Feature",
+            Some(("Constant.Feature", "", "")),
+        ),
+        (
+            "BusinessProcess",
+            "Task",
+            "Task.Assignment",
+            Some(("Task.Assignment", "", "")),
+        ),
+        (
+            "AccountingRegister",
+            "ChartOfAccounts",
+            "ChartOfAccounts.Main",
+            Some(("ChartOfAccounts.Main", "", "")),
+        ),
+        (
+            "CalculationRegister",
+            "ChartOfCalculationTypes",
+            "ChartOfCalculationTypes.Plan",
+            Some(("ChartOfCalculationTypes.Plan", "", "")),
+        ),
+        (
+            "CalculationRegister",
+            "Schedule",
+            "InformationRegister.Schedule",
+            Some(("InformationRegister.Schedule", "", "")),
+        ),
+        (
+            "CalculationRegister",
+            "ScheduleDate",
+            "InformationRegister.Schedule.Dimension.Day",
+            Some(("InformationRegister.Schedule", "Dimension", "Day")),
+        ),
+        (
+            "CalculationRegister",
+            "ScheduleValue",
+            "InformationRegister.Schedule.Resource.Hours",
+            Some(("InformationRegister.Schedule", "Resource", "Hours")),
+        ),
+        (
+            "ChartOfAccounts",
+            "ExtDimensionTypes",
+            "ChartOfCharacteristicTypes.Kinds",
+            Some(("ChartOfCharacteristicTypes.Kinds", "", "")),
+        ),
+        (
+            "CommonCommand",
+            "Group",
+            "CommandGroup.Tools",
+            Some(("CommandGroup.Tools", "", "")),
+        ),
+        ("CommonAttribute", "DataSeparationUse", "Use", None),
+        (
+            "CommonAttribute",
+            "DataSeparationValue",
+            "SessionParameter.Tenant",
+            Some(("SessionParameter.Tenant", "", "")),
+        ),
+        (
+            "EventSubscription",
+            "Handler",
+            "CommonModule.Events.OnWrite",
+            Some(("CommonModule.Events", "", "")),
+        ),
+        (
+            "EventSubscription",
+            "Source",
+            "CatalogObject.Entities",
+            Some(("Catalog.Entities", "", "")),
+        ),
+        (
+            "ScheduledJob",
+            "MethodName",
+            "CommonModule.Timer.Run",
+            Some(("CommonModule.Timer", "", "")),
+        ),
     ];
     assert_eq!(
-        cases.into_iter().collect::<BTreeSet<_>>(),
+        cases
+            .iter()
+            .map(|&(kind, property, _, _)| (kind, property))
+            .collect::<BTreeSet<_>>(),
         crate::kinds::REQUIRED_PROPERTIES
             .iter()
             .flat_map(|(kind, names)| names.iter().map(move |name| (*kind, *name)))
             .collect()
     );
-    for (kind, property) in cases {
-        let body = if property == "DataSeparationUse" {
-            "Use"
-        } else {
-            "Catalog.Required"
-        };
+    for (kind, property, body, expected) in cases {
         let doc = document(kind, &format!("<{property}>{body}</{property}>"));
         let selection = crate::stubs::StubSpec {
             finalized: true,
@@ -310,6 +373,36 @@ fn all_required_scalar_properties_survive_projection_and_strict_readback() {
             &BTreeSet::new(),
         )
         .unwrap();
+        use cf_domain::source_facts::{MissingPolicy, ReferenceStrength};
+        let references: BTreeSet<_> = plan
+            .references
+            .iter()
+            .filter(|reference| reference.strength == ReferenceStrength::Structured)
+            .map(|reference| {
+                assert_eq!(
+                    reference.missing,
+                    MissingPolicy::Diagnose,
+                    "{kind}.{property}"
+                );
+                assert!(reference.target.predefined.is_empty(), "{kind}.{property}");
+                (
+                    reference.target.key(),
+                    reference.target.member.as_str(),
+                    reference.target.member_name.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            references,
+            expected
+                .into_iter()
+                .map(|(key, member, name)| (key.to_owned(), member, name))
+                .collect(),
+            "{kind}.{property}"
+        );
+        if expected.is_none() {
+            assert!(plan.references.is_empty(), "{kind}.{property}");
+        }
         let bytes = crate::source_edits::emit(doc.view.xml.source.as_bytes(), &plan.edits).unwrap();
         assert!(
             std::str::from_utf8(&bytes)
@@ -599,47 +692,279 @@ fn open_properties_keep_both_own_declarations_and_dependency_modules_stay_omitte
 }
 
 #[test]
-fn open_property_cannot_require_an_undeclared_own_form() {
-    let dir = tempfile::tempdir().unwrap();
-    let src = open_source(
-        &dir.path().join("source"),
-        "Report.Target.Form.Absent",
-        "",
-        "",
-    );
-    let recipe = prepare(
-        &src,
-        None,
-        &BTreeSet::from(["CommonModule.Root".into()]),
-        &BTreeSet::new(),
-        &Cancellation::default(),
-    )
-    .unwrap();
-    assert!(!recipe.composition.complete());
-    assert!(recipe.composition.diagnostics.iter().any(
-        |d| d.kind == DiagnosticKind::MissingMember && d.target == "Report.Target.Form.Absent"
-    ));
+fn open_properties_cannot_require_an_undeclared_own_member() {
+    for (default, schema, missing) in [
+        ("Report.Target.Form.Absent", "", "Report.Target.Form.Absent"),
+        (
+            "",
+            "Report.Target.Template.Absent",
+            "Report.Target.Template.Absent",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src = open_source(&dir.path().join("source"), default, schema, "");
+        let recipe = prepare(
+            &src,
+            None,
+            &BTreeSet::from(["CommonModule.Root".into()]),
+            &BTreeSet::new(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(!recipe.composition.complete());
+        assert!(
+            recipe
+                .composition
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::MissingMember && d.target == missing)
+        );
+    }
 }
 
 #[test]
-fn open_foreign_form_property_is_removed_instead_of_importing_its_member() {
+fn open_foreign_form_and_schema_are_empty_in_the_emitted_descriptor() {
     let dir = tempfile::tempdir().unwrap();
     let src = open_source(
         &dir.path().join("source"),
         "Catalog.Hidden.Form.Other",
-        "",
+        "Catalog.Hidden.Template.Other",
         "",
     );
+    let cancel = Cancellation::default();
     let recipe = prepare(
         &src,
         None,
         &BTreeSet::from(["CommonModule.Root".into()]),
         &BTreeSet::new(),
-        &Cancellation::default(),
+        &cancel,
     )
     .unwrap();
     assert!(recipe.composition.complete());
     assert!(!recipe.composition.stubs.contains_key("Catalog.Hidden"));
+    let stage = dir.path().join("stage");
+    recipe
+        .write(
+            &src,
+            &BTreeSet::new(),
+            &stage,
+            &dir.path().join("merge.xml"),
+            &cancel,
+        )
+        .unwrap();
+    let built = std::fs::read_to_string(stage.join("Reports/Target.xml")).unwrap();
+    assert!(built.contains("<DefaultForm/>"));
+    assert!(built.contains("<MainDataCompositionSchema/>"));
+}
+
+#[test]
+fn defined_type_cycle_keeps_the_terminal_type_and_reports_a_missing_terminal() {
+    use crate::source_xml::{CORE, CURRENT};
+    let typed = |kind: &str, name: &str, types: &str| {
+        format!(
+            "<MetaDataObject xmlns='{MD}' xmlns:v='{CORE}' xmlns:c='{CURRENT}'><{kind}><Properties><Name>{name}</Name><Type>{types}</Type></Properties></{kind}></MetaDataObject>"
+        )
+    };
+    for terminal_present in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let terminal = if terminal_present {
+            "<Catalog>Terminal</Catalog>"
+        } else {
+            ""
+        };
+        let src = source(&[
+            ("Configuration.xml", configuration(&format!("<CommonModule>Root</CommonModule><Constant>Carrier</Constant><DefinedType>A</DefinedType><DefinedType>B</DefinedType>{terminal}"))),
+            ("CommonModules/Root.xml", root("Constant.Carrier")),
+            ("Constants/Carrier.xml", typed("Constant", "Carrier", "<v:Type>c:DefinedType.A</v:Type>")),
+            ("DefinedTypes/A.xml", typed("DefinedType", "A", "<v:Type>c:DefinedType.B</v:Type>")),
+            ("DefinedTypes/B.xml", typed("DefinedType", "B", "<v:Type>c:DefinedType.A</v:Type><v:Type>c:CatalogRef.Terminal</v:Type>")),
+            ("Catalogs/Terminal.xml", "<MetaDataObject><Catalog><Properties><Name>Terminal</Name></Properties></Catalog></MetaDataObject>".into()),
+        ], &dir.path().join("source"));
+        let cancel = Cancellation::default();
+        let recipe = prepare(
+            &src,
+            None,
+            &BTreeSet::from(["CommonModule.Root".into()]),
+            &BTreeSet::new(),
+            &cancel,
+        )
+        .unwrap();
+        let mut expected = BTreeSet::from(["Constant.Carrier", "DefinedType.A", "DefinedType.B"]);
+        if terminal_present {
+            expected.insert("Catalog.Terminal");
+        }
+        assert_eq!(
+            recipe
+                .composition
+                .stubs
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(recipe.composition.complete(), terminal_present);
+        if terminal_present {
+            let plan = &recipe.compiled.as_ref().unwrap().projection;
+            assert!(plan.files.contains_key("DefinedTypes/A.xml"));
+            assert!(plan.files.contains_key("DefinedTypes/B.xml"));
+        } else {
+            assert!(
+                recipe.composition.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.kind == DiagnosticKind::MissingObject
+                        && diagnostic.owner == "DefinedType.B"
+                        && diagnostic.source == "DefinedTypes/B.xml"
+                        && diagnostic.target == "Catalog.Terminal"
+                }),
+                "{:?}",
+                recipe.composition.diagnostics
+            );
+            let stage = dir.path().join("stage");
+            assert!(
+                recipe
+                    .write(
+                        &src,
+                        &BTreeSet::new(),
+                        &stage,
+                        &dir.path().join("merge.xml"),
+                        &cancel
+                    )
+                    .is_err()
+            );
+            assert!(!stage.exists());
+        }
+    }
+}
+
+#[test]
+fn form_main_table_and_query_alias_paths_keep_exact_stub_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let attribute = |name: &str, body: &str| {
+        format!("<Attribute><Properties><Name>{name}</Name>{body}</Properties></Attribute>")
+    };
+    let catalog = |name: &str, children: &str| {
+        format!(
+            "<MetaDataObject xmlns='{MD}' xmlns:v='{}' xmlns:c='{}'><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects>{children}</ChildObjects></Catalog></MetaDataObject>",
+            crate::source_xml::CORE,
+            crate::source_xml::CURRENT
+        )
+    };
+    let src = source(
+        &[
+            ("Configuration.xml", configuration("<CommonForm>List</CommonForm><Catalog>Main</Catalog><Catalog>Query</Catalog><Catalog>Detail</Catalog>")),
+            ("CommonForms/List.xml", "<MetaDataObject><CommonForm><Properties><Name>List</Name></Properties></CommonForm></MetaDataObject>".into()),
+            ("CommonForms/List/Ext/Form.xml", "<Form><Attributes><Attribute name='Main'><Settings><MainTable>Catalog.Main</MainTable></Settings></Attribute><Attribute name='Query'><Settings><QueryText>SELECT T.Detail AS Alias FROM Catalog.Query AS T</QueryText></Settings></Attribute></Attributes><Items><Input><DataPath>Main.Field</DataPath></Input><Input><DataPath>Query.Alias.Field</DataPath></Input></Items><Text>Catalog.Unknown</Text></Form>".into()),
+            ("Catalogs/Main.xml", catalog("Main", &(attribute("Field", "") + &attribute("Decoy", "")))),
+            ("Catalogs/Query.xml", catalog("Query", &(attribute("Detail", "<Type><v:Type>c:CatalogRef.Detail</v:Type></Type>") + &attribute("Field", "")))),
+            ("Catalogs/Detail.xml", catalog("Detail", &(attribute("Field", "") + &attribute("Decoy", "")))),
+        ],
+        &dir.path().join("source"),
+    );
+    let cancel = Cancellation::default();
+    let recipe = prepare(
+        &src,
+        None,
+        &BTreeSet::from(["CommonForm.List".into()]),
+        &BTreeSet::new(),
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        recipe.composition.complete(),
+        "{:?}",
+        recipe.composition.diagnostics
+    );
+    assert_eq!(
+        recipe
+            .composition
+            .stubs
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["Catalog.Detail", "Catalog.Main", "Catalog.Query"]
+    );
+    let stage = dir.path().join("stage");
+    recipe
+        .write(
+            &src,
+            &BTreeSet::new(),
+            &stage,
+            &dir.path().join("merge.xml"),
+            &cancel,
+        )
+        .unwrap();
+    for (name, expected, omitted) in [
+        ("Main", "Field", "Decoy"),
+        ("Query", "Detail", "Field"),
+        ("Detail", "Field", "Decoy"),
+    ] {
+        let xml = std::fs::read_to_string(stage.join(format!("Catalogs/{name}.xml"))).unwrap();
+        assert!(xml.contains(&format!("<Name>{expected}</Name>")));
+        assert!(!xml.contains(&format!("<Name>{omitted}</Name>")));
+    }
+}
+
+#[test]
+fn open_by_value_keeps_all_and_only_master_dimensions() {
+    const XML: &str = "<MetaDataObject><InformationRegister><Properties><Name>Keys</Name></Properties><ChildObjects><Resource><Properties><Name>Fallback</Name></Properties></Resource><Dimension><Properties><Name>First</Name><Master>true</Master></Properties></Dimension><Dimension><Properties><Name>Decoy</Name><Master>false</Master></Properties></Dimension><Dimension><Properties><Name>Second</Name><Master>true</Master></Properties></Dimension></ChildObjects></InformationRegister></MetaDataObject>";
+    for (reference, kept, omitted) in [
+        (
+            "InformationRegister.Keys",
+            &["Fallback"][..],
+            &["First", "Second", "Decoy"][..],
+        ),
+        (
+            "InformationRegister.Keys.StandardCommand.OpenByValue",
+            &["First", "Second"][..],
+            &["Fallback", "Decoy"][..],
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(
+            &[
+                (
+                    "Configuration.xml",
+                    configuration(
+                        "<CommonModule>Root</CommonModule><InformationRegister>Keys</InformationRegister>",
+                    ),
+                ),
+                ("CommonModules/Root.xml", root(reference)),
+                ("InformationRegisters/Keys.xml", XML.into()),
+            ],
+            &dir.path().join("source"),
+        );
+        let cancel = Cancellation::default();
+        let recipe = prepare(
+            &src,
+            None,
+            &BTreeSet::from(["CommonModule.Root".into()]),
+            &BTreeSet::new(),
+            &cancel,
+        )
+        .unwrap();
+        let stage = dir.path().join("stage");
+        recipe
+            .write(
+                &src,
+                &BTreeSet::new(),
+                &stage,
+                &dir.path().join("merge.xml"),
+                &cancel,
+            )
+            .unwrap();
+        let xml = std::fs::read_to_string(stage.join("InformationRegisters/Keys.xml")).unwrap();
+        for name in kept {
+            assert!(
+                xml.contains(&format!("<Name>{name}</Name>")),
+                "{reference}: {name}"
+            );
+        }
+        for name in omitted {
+            assert!(
+                !xml.contains(&format!("<Name>{name}</Name>")),
+                "{reference}: {name}"
+            );
+        }
+    }
 }
 
 #[test]

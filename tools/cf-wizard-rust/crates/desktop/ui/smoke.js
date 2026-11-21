@@ -11,6 +11,10 @@
   try {
     let state = await rpc("snapshot");
     check("source auto-open", !!state.configuration && !state.busy);
+    check("window header preserves label without duplicate mark",
+      document.querySelector(".cf-brand").textContent.trim() === "Мастер технической CF" &&
+      !document.querySelector(".cf-app-mark") &&
+      document.querySelector('[data-action="help"]') && document.querySelector('[data-action="about"]'));
     const group = document.querySelector('details[data-kind="CommonModule"]');
     check("Russian metadata tree", !!group && group.querySelector("summary").textContent.includes("Общие модули"));
     group.open = true;

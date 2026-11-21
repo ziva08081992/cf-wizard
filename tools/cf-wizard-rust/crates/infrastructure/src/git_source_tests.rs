@@ -13,6 +13,7 @@ struct Memory {
     data: BTreeMap<String, Vec<u8>>,
     dirs: BTreeMap<String, Vec<Entry>>,
     reads: Mutex<BTreeMap<String, usize>>,
+    fail_path: Mutex<Option<String>>,
     trees: AtomicUsize,
     revision: AtomicUsize,
     cancel_after: AtomicUsize,
@@ -92,6 +93,7 @@ impl Memory {
             data,
             dirs: trees,
             reads: Mutex::new(BTreeMap::new()),
+            fail_path: Mutex::new(None),
             trees: AtomicUsize::new(0),
             revision: AtomicUsize::new(1),
             cancel_after: AtomicUsize::new(usize::MAX),
@@ -124,6 +126,9 @@ impl GitProvider for Memory {
     fn file(&self, _: &str, path: &str, e: &Entry, c: &Cancellation) -> Result<Vec<u8>> {
         c.check()?;
         *self.reads.lock().unwrap().entry(path.into()).or_default() += 1;
+        if self.fail_path.lock().unwrap().as_deref() == Some(path) {
+            return Err(Error::External("fixture transport error".into()));
+        }
         let data = self.data.get(path).unwrap().clone();
         verify_blob(&data, &e.oid, e.size)?;
         Ok(data)
@@ -438,6 +443,85 @@ fn shared_payload_hit_reads_once_and_prefetch_never_materializes_a_revision() {
     assert_eq!(report.metrics["cache.payload_shared_hit"].totals.items, 2);
     assert_eq!(*api.reads.lock().unwrap(), before);
     assert!(!source.files.root.exists());
+}
+
+#[test]
+fn failed_prefetch_keeps_completed_batch_and_resume_skips_cached_paths() {
+    use std::cell::RefCell;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut data = Memory::new().data.clone();
+    let paths: Vec<_> = (0..21)
+        .map(|i| {
+            let path = format!("CommonModules/PrefetchProbe{i:02}.xml");
+            data.insert(
+                format!("config/{path}"),
+                format!("<Probe>{i}</Probe>").into_bytes(),
+            );
+            path
+        })
+        .collect();
+    let api = Memory::from_data(data);
+    let cancel = Cancellation::default();
+    let conn = connection(root.path());
+    let source = GitSource::open(&conn, api.clone(), &cancel).unwrap();
+    let last = format!("config/{}", paths[20]);
+    *api.fail_path.lock().unwrap() = Some(last.clone());
+    let events = RefCell::new(Vec::new());
+
+    assert!(
+        source
+            .prefetch_with_progress(&paths, &cancel, &|event| {
+                events.borrow_mut().push(event);
+            })
+            .is_err()
+    );
+    assert_eq!(
+        events.into_inner(),
+        vec![
+            PrefetchProgress::CheckingCache,
+            PrefetchProgress::Downloading {
+                ready: 0,
+                total: 21,
+                downloaded: 0
+            },
+            PrefetchProgress::Downloading {
+                ready: 20,
+                total: 21,
+                downloaded: 20
+            },
+        ]
+    );
+    drop(source);
+
+    *api.fail_path.lock().unwrap() = None;
+    let reopened = GitSource::open(&conn, api.clone(), &cancel).unwrap();
+    let events = RefCell::new(Vec::new());
+    let before = api.reads.lock().unwrap().clone();
+    reopened
+        .prefetch_with_progress(&paths, &cancel, &|event| {
+            events.borrow_mut().push(event);
+        })
+        .unwrap();
+    assert_eq!(
+        events.into_inner(),
+        vec![
+            PrefetchProgress::CheckingCache,
+            PrefetchProgress::Downloading {
+                ready: 20,
+                total: 21,
+                downloaded: 0
+            },
+            PrefetchProgress::Downloading {
+                ready: 21,
+                total: 21,
+                downloaded: 1
+            },
+        ]
+    );
+    let mut expected = before;
+    *expected.get_mut(&last).unwrap() += 1;
+    assert_eq!(*api.reads.lock().unwrap(), expected);
 }
 
 #[test]

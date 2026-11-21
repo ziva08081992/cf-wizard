@@ -17,7 +17,12 @@ use tao::{
     dpi::LogicalSize,
     event::{Event as TaoEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
-    window::WindowBuilder,
+    window::{Theme, WindowBuilder},
+};
+#[cfg(windows)]
+use tao::{
+    platform::windows::{IconExtWindows, WindowBuilderExtWindows},
+    window::Icon,
 };
 use wry::{WebContext, WebView, WebViewBuilder};
 
@@ -140,10 +145,15 @@ pub fn run() -> Result<()> {
     fs::create_dir_all(&profile).map_err(cf_infrastructure::external)?;
     let window = WindowBuilder::new()
         .with_title("Мастер технической CF · Rust")
+        .with_theme(Some(Theme::Dark))
         .with_inner_size(LogicalSize::new(1180., 820.))
-        .with_min_inner_size(LogicalSize::new(860., 560.))
-        .build(&events)
-        .map_err(cf_infrastructure::external)?;
+        .with_min_inner_size(LogicalSize::new(860., 560.));
+    #[cfg(windows)]
+    let window = window
+        .with_window_icon(Icon::from_resource(1, None).ok())
+        .with_taskbar_icon(Icon::from_resource(1, None).ok());
+    let window = window.build(&events).map_err(cf_infrastructure::external)?;
+    model.file_dialog = rfd::FileDialog::new().set_parent(&window);
     let mut context = WebContext::new(Some(profile));
     let request_proxy = proxy.clone();
     let view = WebViewBuilder::new_with_web_context(&mut context)
@@ -231,7 +241,8 @@ pub fn run() -> Result<()> {
                 } else if method=="pickCache" {
                     let initial=request["args"][0].as_str().map(PathBuf::from).unwrap_or_else(settings::base);
                     let proxy=proxy.clone();
-                    std::thread::spawn(move||{let path=rfd::FileDialog::new().set_directory(initial).pick_folder();let _=proxy.send_event(Event::Progress("pickCache".into(),json!({"id":id,"path":path})));});
+                    let dialog=model.file_dialog.clone().set_directory(initial);
+                    std::thread::spawn(move||{let path=dialog.pick_folder();let _=proxy.send_event(Event::Progress("pickCache".into(),json!({"id":id,"path":path})));});
                 } else {
                     let mut request=request;
                     let mut arguments=request["args"].take();
@@ -254,6 +265,7 @@ pub fn run() -> Result<()> {
             TaoEvent::UserEvent(Event::Progress(kind,value))=>{
                 if kind=="gitTaskProgress"{emit(&view,&kind,vec![value]);}
                 else if kind=="pickCache"{if let Some(id)=value["id"].as_u64(){reply(&view,id,value["path"].clone());}}
+                else if kind=="index-prefetch"{if let Some(caption)=value.as_str(){model.status=caption.into();paint(&view,&mut model);}}
                 else if kind=="index"{model.status=format!("Обновление индекса · {} / {}",value["done"],value["total"]);paint(&view,&mut model);}
             }
             TaoEvent::UserEvent(Event::Platforms(rows))=>{model.add_platforms(rows);paint(&view,&mut model);}

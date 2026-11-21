@@ -587,3 +587,72 @@ fn independently_specified_product_cases_with_and_without_sqlite() {
         }
     }
 }
+
+#[test]
+fn compiled_full_and_stub_descriptors_preserve_generated_identity() {
+    const PATH: &str = "Catalogs/Тест.xml";
+    const IDENTITY: &str = "<InternalInfo><xr:GeneratedType name=\"CatalogRef.Тест\" category=\"Ref\"><xr:TypeId>0476d543-d1ef-44ec-98a2-24c75f80bef3</xr:TypeId><xr:ValueId>9be06663-5d52-4c56-8462-3d63b99739da</xr:ValueId></xr:GeneratedType></InternalInfo>";
+    const CHILD: &str = "<Attribute uuid=\"0dfa1711-aa28-45eb-b254-10aa799772f8\"><Properties><Name>Unused</Name></Properties></Attribute>";
+    const PREDEFINED_PATH: &str = "Catalogs/Тест/Ext/Predefined.xml";
+    const OTHER_PATH: &str = "Catalogs/Тест/Ext/Unrelated.bin";
+    const PREDEFINED: &str = "\u{feff}<PredefinedData>\r\n<Item><Name>Элемент</Name><Code>1</Code></Item>\r\n<Item><Name>Сосед</Name><Code>2</Code></Item>\r\n</PredefinedData>";
+    let mut row = tests::rows()["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "required-values")
+        .unwrap()
+        .clone();
+    edit_source(&mut row, PATH, |xml| {
+        assert!(xml.contains("<ChildObjects></ChildObjects>"));
+        xml.replacen("<Properties>", &format!("{IDENTITY}<Properties>"), 1)
+            .replace(
+                "<ChildObjects></ChildObjects>",
+                &format!("<ChildObjects>{CHILD}</ChildObjects>"),
+            )
+    });
+    let original = STANDARD
+        .decode(row["source"][PATH].as_str().unwrap())
+        .unwrap();
+    row["source"][PREDEFINED_PATH] = serde_json::json!(STANDARD.encode(PREDEFINED));
+    row["source"][OTHER_PATH] = serde_json::json!(STANDARD.encode(b"\0\xff"));
+    let base: BTreeSet<String> = serde_json::from_value(row["selected"].clone()).unwrap();
+    for full in [false, true] {
+        let mut selected = base.clone();
+        if full {
+            selected.insert("Catalog.Тест".into());
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let src = tests::source(&row, &temp.path().join("source"), false);
+        let cancel = Cancellation::default();
+        let plan = RustEngine
+            .preview(&src, None, &selected, &BTreeSet::new(), &cancel)
+            .unwrap();
+        let stage = temp.path().join("stage");
+        let package = plan
+            .write(
+                &src,
+                &BTreeSet::new(),
+                &stage,
+                &temp.path().join("merge.xml"),
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(package.readback.stub_descriptors.contains_key(PATH), !full);
+        assert_eq!(
+            fs::read(stage.join(PREDEFINED_PATH)).unwrap(),
+            PREDEFINED.as_bytes()
+        );
+        assert_eq!(package.files.contains_key(OTHER_PATH), full);
+        let built = fs::read(stage.join(PATH)).unwrap();
+        if full {
+            assert_eq!(built, original);
+        } else {
+            let expected = std::str::from_utf8(&original).unwrap().replace(
+                &format!("<ChildObjects>{CHILD}</ChildObjects>"),
+                "<ChildObjects/>",
+            );
+            assert_eq!(built, expected.as_bytes());
+        }
+    }
+}

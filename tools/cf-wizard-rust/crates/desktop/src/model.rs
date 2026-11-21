@@ -1,5 +1,7 @@
 //! Presentation state. IO executes in jobs; dependency and build decisions live in services.
-use cf_application::{BuildOptions, Cancellation, DependencyEngine, MetadataSource, PreparedPlan};
+use cf_application::{
+    BuildOptions, Cancellation, DependencyEngine, MetadataSource, PrefetchProgress, PreparedPlan,
+};
 use cf_domain::{BuildMode, Error, Result};
 use cf_infrastructure::{
     engine::RustEngine,
@@ -83,6 +85,7 @@ impl Retained {
 }
 
 pub struct Model {
+    pub(crate) file_dialog: rfd::FileDialog,
     pub preferences: Settings,
     pub settings_path: PathBuf,
     pub values: BTreeMap<String, String>,
@@ -165,6 +168,7 @@ impl Model {
             preferences.git_settings.cache = app_base.join("git-cache").to_string_lossy().into();
         }
         Self {
+            file_dialog: rfd::FileDialog::new(),
             preferences,
             settings_path: path,
             values,
@@ -606,7 +610,7 @@ impl Model {
             callback,
             Some("index"),
             move |c, log| {
-                let report = indexing::update(
+                let report = indexing::update_with_prefetch_progress(
                     source.as_ref(),
                     Path::new(&directory),
                     &c,
@@ -617,6 +621,16 @@ impl Model {
                                 json!({"done":done,"total":total}),
                             ));
                         }
+                    },
+                    &|progress| {
+                        let caption = match progress {
+                            PrefetchProgress::CheckingCache => "Проверяю Git-кэш…".to_owned(),
+                            PrefetchProgress::Downloading { ready, total, .. } => {
+                                format!("Загрузка XML из Git · {ready} / {total}")
+                            }
+                        };
+                        let _ = proxy
+                            .send_event(Event::Progress("index-prefetch".into(), json!(caption)));
                     },
                 )?;
                 let status =
@@ -796,71 +810,76 @@ let index_started=Instant::now();
                 .unwrap_or_else(settings::base);
         }
         while !initial.is_dir() && initial.pop() {}
-        self.start(
-            "Выберите путь…",
-            callback,
-            None,
-            move |_, _| {
-                let dialog = rfd::FileDialog::new().set_directory(initial);
-                let chosen = match file {
-                    Some("Configuration.xml") => {
-                        dialog.add_filter("Configuration.xml", &["xml"]).pick_file()
-                    }
-                    Some(_) => dialog
-                        .add_filter("Программа платформы", &["exe"])
-                        .pick_file(),
-                    None => dialog.pick_folder(),
-                };
-                let platform = chosen
-                    .as_ref()
-                    .filter(|_| key == "platform" || key == "designer")
-                    .map(|p| {
-                        platform::validate(
-                            p,
-                            if key == "platform" {
-                                BuildMode::Ibcmd
-                            } else {
-                                BuildMode::Designer
-                            },
-                        )
-                    })
-                    .transpose()?;
-                Ok(Box::new(move |m| {
-                    if let Some(path) = chosen {
-                        m.values.insert(key.clone(), path.to_string_lossy().into());
-                        let last = if file.is_some() {
-                            path.parent().unwrap_or(&path)
+        let mut dialog = self.file_dialog.clone().set_directory(initial);
+        let caption = match (key.as_str(), file) {
+            ("index_directory", _) => {
+                dialog = dialog.set_title("Выбор папки индексов SQLite");
+                "Выберите папку в системном окне"
+            }
+            (_, None) => "Выберите папку в системном окне",
+            (_, Some(_)) => "Выберите файл в системном окне",
+        };
+        let previous_status = (self.status.clone(), self.status_kind.clone());
+        self.start(caption, callback, None, move |_, _| {
+            let chosen = match file {
+                Some("Configuration.xml") => {
+                    dialog.add_filter("Configuration.xml", &["xml"]).pick_file()
+                }
+                Some(_) => dialog
+                    .add_filter("Программа платформы", &["exe"])
+                    .pick_file(),
+                None => dialog.pick_folder(),
+            };
+            let platform = chosen
+                .as_ref()
+                .filter(|_| key == "platform" || key == "designer")
+                .map(|p| {
+                    platform::validate(
+                        p,
+                        if key == "platform" {
+                            BuildMode::Ibcmd
                         } else {
-                            &path
-                        };
-                        m.preferences
-                            .last_dirs
-                            .insert(key.clone(), last.to_string_lossy().into());
-                        m.save_soon();
-                        if let Some(p) = platform {
-                            m.platforms.push(p);
-                        }
-                        if key == "logs" {
-                            journal::set_crash_folder(Path::new(&m.values["logs"]));
-                        }
-                        if key == "export" {
-                            let _ = m.open(None);
-                        } else if key == "index_directory"
-                            && let Some(s) = &m.source
-                        {
-                            let identity = s
-                                .manifest()
-                                .map_or(s.identity(), |v| v.source_key.as_str())
-                                .to_owned();
-                            m.preferences
-                                .index_directories
-                                .insert(identity, path.to_string_lossy().into());
-                            m.check_index();
-                        }
+                            BuildMode::Designer
+                        },
+                    )
+                })
+                .transpose()?;
+            Ok(Box::new(move |m| {
+                (m.status, m.status_kind) = previous_status;
+                if let Some(path) = chosen {
+                    m.values.insert(key.clone(), path.to_string_lossy().into());
+                    let last = if file.is_some() {
+                        path.parent().unwrap_or(&path)
+                    } else {
+                        &path
+                    };
+                    m.preferences
+                        .last_dirs
+                        .insert(key.clone(), last.to_string_lossy().into());
+                    m.save_soon();
+                    if let Some(p) = platform {
+                        m.platforms.push(p);
                     }
-                }))
-            },
-        )
+                    if key == "logs" {
+                        journal::set_crash_folder(Path::new(&m.values["logs"]));
+                    }
+                    if key == "export" {
+                        let _ = m.open(None);
+                    } else if key == "index_directory"
+                        && let Some(s) = &m.source
+                    {
+                        let identity = s
+                            .manifest()
+                            .map_or(s.identity(), |v| v.source_key.as_str())
+                            .to_owned();
+                        m.preferences
+                            .index_directories
+                            .insert(identity, path.to_string_lossy().into());
+                        m.check_index();
+                    }
+                }
+            }))
+        })
     }
     fn check_index(&mut self) {
         let Some(source) = self.source.clone() else {

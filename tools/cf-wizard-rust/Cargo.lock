@@ -361,7 +361,7 @@ checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 
 [[package]]
 name = "cf-application"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "cf-domain",
  "serde",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "cf-domain"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "hex",
  "serde",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "cf-infrastructure"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "base64 0.22.1",
  "cf-application",
@@ -411,12 +411,13 @@ dependencies = [
 
 [[package]]
 name = "cf-wizard-rust"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "cf-application",
  "cf-domain",
  "cf-infrastructure",
  "chrono",
+ "find-msvc-tools",
  "rfd",
  "serde",
  "serde_json",

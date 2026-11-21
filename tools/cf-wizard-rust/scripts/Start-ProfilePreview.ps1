@@ -5,7 +5,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Executable) {
-    $Executable = Join-Path $PSScriptRoot 'CF-Wizard-0.8.9.exe'
+    $Executable = Join-Path $PSScriptRoot 'CF-Wizard-0.8.10.exe'
 }
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 function Quote-WindowsArgument([string]$Value) {
